@@ -25,6 +25,20 @@ LOAD users.json
 EXIT
 ```
 
+## Project Structure
+```
+untitled/
+├── src/db/
+│   ├── Main.java      entry point
+│   ├── model/         Table, Row, Column, DataType
+│   ├── query/         QueryEngine, Condition (WHERE matching)
+│   ├── statement/     one class per command: Create, Insert, Select, Update, Delete, Save, Load
+│   ├── parser/        Parser: turns a command line into a Statement
+│   ├── storage/       TableSerializer / TableDeserializer (JSON files)
+│   └── repl/          REPL: the interactive prompt
+└── test/db/           JUnit 5 tests, same packages as src
+```
+
 ## Roadmap
 - SQL parser
 - JOIN support
