@@ -2,7 +2,6 @@ package db.parser;
 
 import db.query.Expression;
 import db.query.Condition;
-import db.query.ColumnRef;
 import db.statement.InsertStatement;
 import db.statement.SelectStatement;
 
@@ -16,7 +15,7 @@ import static org.junit.jupiter.api.Assertions.*;
 class ParserTest {
 
     private List<String> columnNames(String select) {
-        return ((SelectStatement) Parser.parse(select)).getColumns().stream().map(ColumnRef::toString).toList();
+        return ((SelectStatement) Parser.parse(select)).getColumns().stream().map(Object::toString).toList();
     }
 
     private List<Object> insertedValues(String values) {

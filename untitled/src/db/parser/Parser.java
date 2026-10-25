@@ -2,6 +2,7 @@ package db.parser;
 
 import db.model.Column;
 import db.model.DataType;
+import db.query.Aggregate;
 import db.query.And;
 import db.query.Condition;
 import db.query.ColumnRef;
@@ -10,6 +11,8 @@ import db.query.Join;
 import db.query.Not;
 import db.query.Or;
 import db.query.OrderBy;
+import db.query.SelectItem;
+import db.query.SelectQuery;
 import db.query.TableRef;
 import db.statement.CreateIndexStatement;
 import db.statement.CreateStatement;
@@ -30,12 +33,15 @@ import java.util.*;
 //
 //   statement := (select | insert | update | delete | create | createIdx | dropIdx | showIdx | explain
 //                 | save | load) [';']
-//   select    := SELECT ('*' | item {',' item}) FROM table {join} [where] [orderBy] [limit]
-//   item      := column | name '.' '*'
+//   select    := SELECT ('*' | item {',' item}) FROM table {join} [where] [groupBy] [orderBy] [limit]
+//   item      := aggregate | column | name '.' '*'
+//   aggregate := COUNT '(' ('*' | column) ')' | (SUM | AVG) '(' column ')'
 //   column    := name ['.' name]          table.column, where table may be an alias
 //   table     := name [[AS] name]         the optional second name is an alias
 //   join      := [INNER | LEFT [OUTER]] JOIN table ON or
-//   orderBy   := ORDER BY column [ASC | DESC] {',' column [ASC | DESC]}
+//   groupBy   := GROUP BY column {',' column}
+//   orderBy   := ORDER BY sortItem {',' sortItem}
+//   sortItem  := (aggregate | column) [ASC | DESC]
 //   limit     := LIMIT count [OFFSET count] | LIMIT count ',' count    (the second: LIMIT offset, count)
 //   insert    := INSERT INTO name ['(' name {',' name} ')'] VALUES '(' literal {',' literal} ')'
 //   update    := UPDATE name SET name '=' literal {',' name '=' literal} [where]
@@ -92,7 +98,7 @@ public class Parser {
 
     private Statement parseSelect() {
         expectKeyword("SELECT");
-        List<ColumnRef> columns = new ArrayList<>();
+        List<SelectItem> columns = new ArrayList<>();
         if (!acceptSymbol("*")) {
             do {
                 columns.add(parseSelectItem());
@@ -105,14 +111,23 @@ public class Parser {
         while ((join = parseJoin()) != null) joins.add(join);
         Expression where = parseWhere();
 
+        List<ColumnRef> groupBy = new ArrayList<>();
+        if (acceptKeyword("GROUP")) {
+            expectKeyword("BY");
+            do {
+                groupBy.add(parseColumnRef());
+            } while (acceptSymbol(","));
+        }
+
         List<OrderBy> orderBy = new ArrayList<>();
         if (acceptKeyword("ORDER")) {
             expectKeyword("BY");
             do {
-                ColumnRef column = parseColumnRef();
+                Aggregate aggregate = parseAggregate();
+                SelectItem item = aggregate != null ? aggregate : parseColumnRef();
                 boolean descending = acceptWord("DESC");
                 if (!descending) acceptWord("ASC");
-                orderBy.add(new OrderBy(column, descending));
+                orderBy.add(new OrderBy(item, descending));
             } while (acceptSymbol(","));
         }
 
@@ -128,7 +143,7 @@ public class Parser {
                 limit = parseCount("LIMIT");
             }
         }
-        return new SelectStatement(from, joins, columns, where, orderBy, limit, offset);
+        return new SelectStatement(new SelectQuery(from, joins, columns, where, groupBy, orderBy, limit, offset));
     }
 
     // A whole number, zero or more, for LIMIT and OFFSET
@@ -145,12 +160,32 @@ public class Parser {
         }
     }
 
-    // column or table.*
-    private ColumnRef parseSelectItem() {
+    // aggregate, column or table.*
+    private SelectItem parseSelectItem() {
+        Aggregate aggregate = parseAggregate();
+        if (aggregate != null) return aggregate;
         String name = expectName("column name");
         if (!acceptSymbol(".")) return new ColumnRef(name);
         if (acceptSymbol("*")) return new ColumnRef(name, "*");
         return new ColumnRef(name, expectName("column name"));
+    }
+
+    // A name followed by '(' is a function call; null when the next tokens aren't one
+    private Aggregate parseAggregate() {
+        Token name = peek();
+        if (name.type() != TokenType.IDENTIFIER || !tokens.get(index + 1).isSymbol("(")) return null;
+        Aggregate.Function function;
+        try {
+            function = Aggregate.Function.valueOf(name.text().toUpperCase());
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException("Unknown function " + name.text() + ", expected COUNT, SUM or AVG");
+        }
+        index += 2;
+        Aggregate aggregate = function == Aggregate.Function.COUNT && acceptSymbol("*")
+                ? Aggregate.countAll()
+                : new Aggregate(function, parseColumnRef());
+        expectSymbol(")");
+        return aggregate;
     }
 
     private ColumnRef parseColumnRef() {
@@ -342,6 +377,10 @@ public class Parser {
     }
 
     private Condition parseCondition() {
+        if (peek().type() == TokenType.IDENTIFIER && tokens.get(index + 1).isSymbol("(")) {
+            throw new IllegalArgumentException(peek().text() + "(...) can't be used in WHERE or ON, "
+                    + "conditions compare columns with values");
+        }
         ColumnRef column = parseColumnRef();
         Token token = peek();
         Condition.Operator operator;

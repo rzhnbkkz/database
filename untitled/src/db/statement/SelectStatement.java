@@ -5,77 +5,70 @@ import db.query.Expression;
 import db.query.Join;
 import db.query.OrderBy;
 import db.query.QueryEngine;
+import db.query.SelectItem;
+import db.query.SelectQuery;
 import db.query.TableRef;
 
 import java.util.List;
 
 public class SelectStatement implements Statement{
-    private TableRef from;
-    private List<Join> joins;
-    // Empty means every column (SELECT *)
-    private List<ColumnRef> columns;
-    private Expression where;
-    private List<OrderBy> orderBy;
-    // null means no LIMIT
-    private Integer limit;
-    private int offset;
+    private SelectQuery query;
 
-    public SelectStatement(TableRef from, List<Join> joins, List<ColumnRef> columns, Expression where,
-                           List<OrderBy> orderBy, Integer limit, int offset) {
-        this.from = from;
-        this.joins = joins;
-        this.columns = columns;
-        this.where = where;
-        this.orderBy = orderBy;
-        this.limit = limit;
-        this.offset = offset;
-    }
-
-    public SelectStatement(TableRef from, List<Join> joins, List<ColumnRef> columns, Expression where) {
-        this(from, joins, columns, where, List.of(), null, 0);
+    public SelectStatement(SelectQuery query) {
+        this.query = query;
     }
 
     public SelectStatement(String tableName, Expression where) {
-        this(new TableRef(tableName), List.of(), List.of(), where);
+        this(new SelectQuery(new TableRef(tableName), List.of(), List.of(), where));
     }
 
     public SelectStatement(String tableName) {
         this(tableName, Expression.ALL_ROWS);
     }
 
-    public List<ColumnRef> getColumns() {
-        return columns;
+    public SelectQuery getQuery() {
+        return query;
+    }
+
+    // Empty means every column (SELECT *)
+    public List<SelectItem> getColumns() {
+        return query.columns();
     }
 
     public Expression getWhere() {
-        return where;
+        return query.where();
     }
 
     public String getTableName() {
-        return from.table();
+        return query.from().table();
     }
 
     public TableRef getFrom() {
-        return from;
+        return query.from();
     }
 
     public List<Join> getJoins() {
-        return joins;
+        return query.joins();
+    }
+
+    public List<ColumnRef> getGroupBy() {
+        return query.groupBy();
     }
 
     public List<OrderBy> getOrderBy() {
-        return orderBy;
+        return query.orderBy();
     }
 
+    // null means no LIMIT
     public Integer getLimit() {
-        return limit;
+        return query.limit();
     }
 
     public int getOffset() {
-        return offset;
+        return query.offset();
     }
 
-    public void execute(QueryEngine query) {
-        System.out.println(query.select(from, joins, columns, where, orderBy, limit, offset));
+    public void execute(QueryEngine engine) {
+        System.out.println(engine.select(query));
     }
 }

@@ -43,11 +43,22 @@ public class Scope {
 
     // Checks the column exists and is not ambiguous; the result's key() is what rows are keyed by
     public ColumnRef resolve(ColumnRef ref) {
+        return key(owner(ref), ref.column());
+    }
+
+    // The column a reference names, to look at its type
+    public Column column(ColumnRef ref) {
+        return tables.get(owner(ref)).getColumns().stream()
+                .filter(col -> col.getName().equals(ref.column())).findFirst().orElseThrow();
+    }
+
+    // Alias of the one table that has this column
+    private String owner(ColumnRef ref) {
         if (ref.table() != null) {
             Table table = tables.get(ref.table());
             if (table == null) throw new IllegalArgumentException("Unknown table '" + ref.table() + "' in " + ref);
             if (!hasColumn(table, ref.column())) throw new IllegalArgumentException("Unknown column '" + ref + "'");
-            return key(ref.table(), ref.column());
+            return ref.table();
         }
         List<String> owners = new ArrayList<>();
         for (Map.Entry<String, Table> entry : tables.entrySet()) {
@@ -58,7 +69,7 @@ public class Scope {
             throw new IllegalArgumentException("Column '" + ref.column() + "' is ambiguous, write "
                     + owners.stream().map(owner -> owner + "." + ref.column()).collect(Collectors.joining(" or ")));
         }
-        return key(owners.get(0), ref.column());
+        return owners.get(0);
     }
 
     // Every column of the table with this alias, or of all tables when alias is null, in order

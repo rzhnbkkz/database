@@ -62,12 +62,12 @@ class IndexStatementTest {
 
     private List<String> explain(String select) {
         SelectStatement s = (SelectStatement) Parser.parse(select);
-        return engine.explain(s.getFrom(), s.getJoins(), s.getColumns(), s.getWhere());
+        return engine.explain(s.getQuery());
     }
 
     private List<Map<String, Object>> select(String sql) {
         SelectStatement s = (SelectStatement) Parser.parse(sql);
-        return engine.select(s.getFrom(), s.getJoins(), s.getColumns(), s.getWhere()).stream().map(Row::getData).toList();
+        return engine.select(s.getQuery()).stream().map(Row::getData).toList();
     }
 
     // Parsing

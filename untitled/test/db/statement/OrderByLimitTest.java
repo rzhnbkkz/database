@@ -51,8 +51,7 @@ class OrderByLimitTest {
 
     private List<Map<String, Object>> select(String sql) {
         SelectStatement s = parse(sql);
-        return engine.select(s.getFrom(), s.getJoins(), s.getColumns(), s.getWhere(),
-                s.getOrderBy(), s.getLimit(), s.getOffset()).stream().map(r -> r.getData()).toList();
+        return engine.select(s.getQuery()).stream().map(r -> r.getData()).toList();
     }
 
     private List<Object> ids(String sql) {
@@ -255,8 +254,7 @@ class OrderByLimitTest {
     @Test
     void explainLeavesOutClausesThatAreNotThere() {
         SelectStatement s = parse("SELECT * FROM users LIMIT 3");
-        assertEquals(List.of("users: full scan", "limit 3"), engine.explain(s.getFrom(), s.getJoins(), s.getColumns(),
-                s.getWhere(), s.getOrderBy(), s.getLimit(), s.getOffset()));
-        assertEquals(List.of("users: full scan"), engine.explain(s.getFrom(), s.getJoins(), s.getColumns(), s.getWhere()));
+        assertEquals(List.of("users: full scan", "limit 3"), engine.explain(s.getQuery()));
+        assertEquals(List.of("users: full scan"), engine.explain(parse("SELECT * FROM users").getQuery()));
     }
 }

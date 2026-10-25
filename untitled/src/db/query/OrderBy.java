@@ -1,14 +1,15 @@
 package db.query;
 
-// One ORDER BY item: the column to sort on, and whether biggest comes first
-public record OrderBy(ColumnRef column, boolean descending) {
+// One ORDER BY item: a column or an aggregate to sort on, and whether biggest comes first
+public record OrderBy(SelectItem item, boolean descending) {
 
     public OrderBy resolve(Scope scope) {
-        return new OrderBy(scope.resolve(column), descending);
+        return new OrderBy(item instanceof Aggregate aggregate ? aggregate.resolve(scope) : scope.resolve((ColumnRef) item),
+                descending);
     }
 
     @Override
     public String toString() {
-        return column + (descending ? " DESC" : "");
+        return item + (descending ? " DESC" : "");
     }
 }

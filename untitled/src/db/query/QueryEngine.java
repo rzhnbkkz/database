@@ -77,11 +77,15 @@ public class QueryEngine {
         }
     }
 
-    // Everything a SELECT needs, with names checked and indexes chosen, before touching any rows
-    private record Plan(Scope scope, List<Access> accesses, List<Join> joins, List<Expression> conditions,
-                        Expression filter, List<OrderBy> order, Map<String, String> output) {}
+    // Everything a SELECT needs, with names checked and indexes chosen, before touching any rows.
+    // grouped is true with GROUP BY or any aggregate. aggregates are keyed by the row key their result gets.
+    private record Plan(Scope scope, List<Access> accesses, List<Expression> conditions, Expression filter,
+                        boolean grouped, List<ColumnRef> groupBy, Map<String, Aggregate> aggregates,
+                        List<OrderBy> order, Map<String, String> output) {}
 
-    private Plan plan(TableRef from, List<Join> joins, List<ColumnRef> columns, Expression where, List<OrderBy> orderBy) {
+    private Plan plan(SelectQuery query) {
+        TableRef from = query.from();
+        List<Join> joins = query.joins();
         Scope scope = new Scope(!joins.isEmpty());
         Table first = requireTable(from.table());
         scope.add(from.alias(), first);
@@ -93,15 +97,43 @@ public class QueryEngine {
             // ON can use this table and the ones before it, not later ones
             conditions.add(join.on().resolve(scope));
         }
-        Expression filter = where.resolve(scope);
+        Expression filter = query.where().resolve(scope);
+        List<ColumnRef> groupBy = query.groupBy().stream().map(scope::resolve).toList();
         // ORDER BY may name any column of the tables, not only selected ones
-        List<OrderBy> order = orderBy.stream().map(item -> item.resolve(scope)).toList();
+        List<OrderBy> order = query.orderBy().stream().map(item -> item.resolve(scope)).toList();
+
         Map<String, String> output = new LinkedHashMap<>(); // label -> row key
-        for (ColumnRef column : columns) {
-            if (column.isStar()) {
-                for (ColumnRef ref : scope.columns(column.table())) output.put(ref.key(), ref.key());
+        Map<String, Aggregate> aggregates = new LinkedHashMap<>();
+        for (SelectItem item : query.columns()) {
+            if (item instanceof Aggregate aggregate) {
+                Aggregate resolved = aggregate.resolve(scope);
+                aggregates.put(resolved.toString(), resolved);
+                output.put(aggregate.toString(), resolved.toString());
+            } else if (((ColumnRef) item).isStar()) {
+                for (ColumnRef ref : scope.columns(((ColumnRef) item).table())) output.put(ref.key(), ref.key());
             } else {
-                output.put(column.toString(), scope.resolve(column).key());
+                output.put(item.toString(), scope.resolve((ColumnRef) item).key());
+            }
+        }
+        for (OrderBy item : order) {
+            if (item.item() instanceof Aggregate aggregate) aggregates.put(aggregate.toString(), aggregate);
+        }
+
+        // As in MySQL's default mode: once rows are grouped, a plain column only has one value per
+        // group if it's one of the GROUP BY columns
+        boolean grouped = !groupBy.isEmpty() || !aggregates.isEmpty();
+        if (grouped) {
+            if (query.columns().isEmpty()) {
+                throw new IllegalArgumentException("SELECT * can't be used with GROUP BY or aggregates, list the columns instead");
+            }
+            Set<String> groupKeys = new HashSet<>(groupBy.stream().map(ColumnRef::key).toList());
+            for (Map.Entry<String, String> entry : output.entrySet()) {
+                if (!aggregates.containsKey(entry.getValue()) && !groupKeys.contains(entry.getValue())) {
+                    throw notGrouped(entry.getKey());
+                }
+            }
+            for (OrderBy item : order) {
+                if (item.item() instanceof ColumnRef column && !groupKeys.contains(column.key())) throw notGrouped(column.key());
             }
         }
 
@@ -116,35 +148,35 @@ public class QueryEngine {
                     IndexLookup.find(tables.get(i + 1), ref.alias(), true, conditions.get(i), earlier)));
             earlier.add(ref.alias());
         }
-        return new Plan(scope, accesses, joins, conditions, filter, order, output);
+        return new Plan(scope, accesses, conditions, filter, grouped, groupBy, aggregates, order, output);
     }
 
-    // A full SELECT, with any number of joins. Rows from a single table keep plain column names;
-    // joined rows are keyed alias.column. Chosen columns are labeled as written (u.name stays u.name).
-    public List<Row> select(TableRef from, List<Join> joins, List<ColumnRef> columns, Expression where) {
-        return select(from, joins, columns, where, List.of(), null, 0);
+    private static IllegalArgumentException notGrouped(String column) {
+        return new IllegalArgumentException("Column '" + column + "' must be in GROUP BY, or inside COUNT, SUM or AVG");
     }
 
-    // Rows are filtered, then sorted, then cut to the LIMIT (null for none), and only then reduced
-    // to the chosen columns, so ORDER BY can use a column that isn't selected
-    public List<Row> select(TableRef from, List<Join> joins, List<ColumnRef> columns, Expression where,
-                            List<OrderBy> orderBy, Integer limit, int offset) {
-        Plan plan = plan(from, joins, columns, where, orderBy);
+    // A full SELECT. Rows from a single table keep plain column names; joined rows are keyed
+    // alias.column. Chosen columns are labeled as written (u.name stays u.name, sum(total) is SUM(total)).
+    // Steps: join, WHERE, group, sort, LIMIT/OFFSET, and only then pick the columns, so ORDER BY
+    // can use a column that isn't selected.
+    public List<Row> select(SelectQuery query) {
+        Plan plan = plan(query);
         Access first = plan.accesses().get(0);
         List<Row> rows = new ArrayList<>();
-        for (Row row : first.rows(new Row(Map.of()))) rows.add(withAlias(row, from.alias(), plan.scope()));
-        for (int i = 0; i < joins.size(); i++) {
-            rows = join(rows, plan.accesses().get(i + 1), joins.get(i), plan.conditions().get(i), plan.scope());
+        for (Row row : first.rows(new Row(Map.of()))) rows.add(withAlias(row, query.from().alias(), plan.scope()));
+        for (int i = 0; i < query.joins().size(); i++) {
+            rows = join(rows, plan.accesses().get(i + 1), query.joins().get(i), plan.conditions().get(i), plan.scope());
         }
 
         List<Row> matching = new ArrayList<>();
         for (Row row : rows) {
             if (plan.filter().matches(row)) matching.add(row);
         }
+        if (plan.grouped()) matching = group(matching, plan);
         // List.sort is stable, so rows that tie keep their table order
         if (!plan.order().isEmpty()) matching.sort(comparator(plan.order()));
-        int start = Math.min(offset, matching.size());
-        int end = limit == null ? matching.size() : (int) Math.min(matching.size(), (long) start + limit);
+        int start = Math.min(query.offset(), matching.size());
+        int end = query.limit() == null ? matching.size() : (int) Math.min(matching.size(), (long) start + query.limit());
 
         List<Row> result = new ArrayList<>();
         for (Row row : matching.subList(start, end)) {
@@ -162,23 +194,53 @@ public class QueryEngine {
         return result;
     }
 
-    // One line per table, in the order they are read, saying whether an index is used,
-    // then the sort and limit if there are any
-    public List<String> explain(TableRef from, List<Join> joins, List<ColumnRef> columns, Expression where) {
-        return explain(from, joins, columns, where, List.of(), null, 0);
+    // One row per group, in order of first appearance, holding the GROUP BY values and each aggregate's
+    // result. Empty cells form a group of their own. Without GROUP BY every row is in one group, so
+    // aggregates over no rows still give one row (COUNT(*) = 0).
+    private static List<Row> group(List<Row> rows, Plan plan) {
+        Map<List<Object>, List<Row>> groups = new LinkedHashMap<>();
+        if (plan.groupBy().isEmpty()) {
+            groups.put(List.of(), rows);
+        } else {
+            for (Row row : rows) {
+                List<Object> key = new ArrayList<>();
+                for (ColumnRef column : plan.groupBy()) key.add(row.get(column.key()));
+                groups.computeIfAbsent(key, k -> new ArrayList<>()).add(row);
+            }
+        }
+        List<Row> result = new ArrayList<>();
+        for (Map.Entry<List<Object>, List<Row>> group : groups.entrySet()) {
+            Map<String, Object> data = new LinkedHashMap<>();
+            for (int i = 0; i < plan.groupBy().size(); i++) {
+                Object value = group.getKey().get(i);
+                if (value != null) data.put(plan.groupBy().get(i).key(), value);
+            }
+            for (Map.Entry<String, Aggregate> aggregate : plan.aggregates().entrySet()) {
+                Object value = aggregate.getValue().compute(group.getValue());
+                if (value != null) data.put(aggregate.getKey(), value);
+            }
+            result.add(new Row(data));
+        }
+        return result;
     }
 
-    public List<String> explain(TableRef from, List<Join> joins, List<ColumnRef> columns, Expression where,
-                                List<OrderBy> orderBy, Integer limit, int offset) {
-        Plan plan = plan(from, joins, columns, where, orderBy);
+    // One line per table, in the order they are read, saying whether an index is used,
+    // then the grouping, sort and limit if there are any
+    public List<String> explain(SelectQuery query) {
+        Plan plan = plan(query);
         List<String> lines = new ArrayList<>();
         for (int i = 0; i < plan.accesses().size(); i++) lines.add(plan.accesses().get(i).describe(i == 0));
+        if (!plan.groupBy().isEmpty()) {
+            lines.add("group by " + plan.groupBy().stream().map(ColumnRef::toString).collect(Collectors.joining(", ")));
+        } else if (plan.grouped()) {
+            lines.add("aggregate all rows into one");
+        }
         if (!plan.order().isEmpty()) {
             lines.add("sort by " + plan.order().stream().map(OrderBy::toString).collect(Collectors.joining(", ")));
         }
         List<String> cut = new ArrayList<>();
-        if (limit != null) cut.add("limit " + limit);
-        if (offset > 0) cut.add("offset " + offset);
+        if (query.limit() != null) cut.add("limit " + query.limit());
+        if (query.offset() > 0) cut.add("offset " + query.offset());
         if (!cut.isEmpty()) lines.add(String.join(" ", cut));
         return lines;
     }
@@ -186,7 +248,8 @@ public class QueryEngine {
     private static Comparator<Row> comparator(List<OrderBy> order) {
         Comparator<Row> result = null;
         for (OrderBy item : order) {
-            String key = item.column().key();
+            // An aggregate's result is stored under its name, like COUNT(*)
+            String key = item.item() instanceof ColumnRef column ? column.key() : item.item().toString();
             Comparator<Row> byColumn = (a, b) -> compareForSort(a.get(key), b.get(key));
             if (item.descending()) byColumn = byColumn.reversed();
             result = result == null ? byColumn : result.thenComparing(byColumn);
