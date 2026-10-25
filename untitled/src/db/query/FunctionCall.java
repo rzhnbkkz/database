@@ -108,7 +108,9 @@ public record FunctionCall(Function function, List<SelectItem> args) implements 
             case LENGTH -> x.toString().length();
             case TRIM -> x.toString().strip();
             case CONCAT -> values.stream().map(Object::toString).collect(Collectors.joining());
-            case REPLACE -> x.toString().replace(values.get(1).toString(), values.get(2).toString());
+            // As in MySQL, replacing empty text changes nothing
+            case REPLACE -> values.get(1).toString().isEmpty() ? x.toString()
+                    : x.toString().replace(values.get(1).toString(), values.get(2).toString());
             case SUBSTRING -> substring(x.toString(), number(values.get(1)).intValue(),
                     values.size() == 3 ? number(values.get(2)).intValue() : Integer.MAX_VALUE);
             case ABS -> SelectItem.isWhole(x) ? SelectItem.whole(Math.abs(number(x).longValue())) : (Object) Math.abs(number(x).floatValue());

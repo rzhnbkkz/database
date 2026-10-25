@@ -286,6 +286,11 @@ class RangeIndexTest {
     void equalityStillWorksOnSortedIndexes() {
         assertEquals(List.of(2, 4), ids("age = 30"));
         assertEquals(List.of(2, 4), ids("age = 30.0"));
-        assertEquals(List.of(), ids("age = '30'"));
+    }
+
+    @Test
+    void comparingANumberWithTextIsAnError() {
+        IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> ids("age = '30'"));
+        assertEquals("Can't compare INTEGER with VARCHAR: age = '30'", e.getMessage());
     }
 }

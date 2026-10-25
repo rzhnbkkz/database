@@ -117,7 +117,14 @@ class WriteFeaturesTest {
     void explicitNullStaysEmpty() {
         run("INSERT INTO users (name, city, score) VALUES ('Alice', NULL, NULL)");
         assertEquals(Map.of("id", 1, "name", "Alice", "active", true), users().getRows().get(0).getData());
-        assertEquals("[{id=1, name=Alice, active=true}]", printed("SELECT * FROM users"));
+        // Empty cells print as NULL
+        assertEquals("""
+                +----+-------+------+--------+-------+
+                | id | name  | city | active | score |
+                +----+-------+------+--------+-------+
+                |  1 | Alice | NULL | TRUE   | NULL  |
+                +----+-------+------+--------+-------+
+                1 row in set""", printed("SELECT * FROM users"));
     }
 
     @Test

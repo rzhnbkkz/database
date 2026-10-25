@@ -251,10 +251,12 @@ class WhereConditionTest {
     }
 
     @Test
-    void mismatchedTypesNeverMatchExceptNotEquals() {
+    void mismatchedTypesAreUnknownSoNeverMatch() {
+        // A resolved query rejects these; unresolved, they are unknown like a comparison with NULL
         assertEquals(List.of(), idsWhere("name = 5"));
         assertEquals(List.of(), idsWhere("name > 5"));
-        assertEquals(List.of(1, 2, 3), idsWhere("name != 5"));
+        assertEquals(List.of(), idsWhere("name != 5"));
+        assertEquals(List.of(), idsWhere("NOT name = 5"));
     }
 
     @Test

@@ -119,6 +119,26 @@ class ExpressionsTest {
         assertEquals("+ needs numbers, 'a' is VARCHAR", fails("SELECT qty + 'a' FROM items"));
     }
 
+    @Test
+    void comparingDifferentTypesIsAnErrorBeforeReadingRows() {
+        run("DELETE FROM items");
+        assertEquals("Can't compare INTEGER with VARCHAR: qty != '2'", fails("SELECT id FROM items WHERE qty != '2'"));
+        assertEquals("Can't compare INTEGER with VARCHAR: id = '1'", fails("SELECT id FROM items WHERE id = '1'"));
+        assertEquals("Can't compare VARCHAR with INTEGER: name = 1", fails("SELECT id FROM items WHERE name IN (1, 2)"));
+        assertEquals("Can't compare INTEGER with BOOLEAN: qty = TRUE", fails("SELECT id FROM items WHERE qty = TRUE"));
+        assertEquals("Can't compare VARCHAR with FLOAT: city>price", fails("SELECT id FROM items WHERE city > price"));
+        assertEquals("Can't compare VARCHAR with INTEGER: UPPER(name) < qty", fails("SELECT id FROM items WHERE UPPER(name) < qty"));
+        // Numbers of different types and NULL still compare
+        assertDoesNotThrow(() -> run("SELECT id FROM items WHERE qty = 1.5 OR price > 2 OR qty = NULL"));
+    }
+
+    @Test
+    void comparingWithASubqueryValueOfAnotherTypeIsUnknown() {
+        // Not known until the subquery runs, so neither = nor != matches
+        assertEquals(List.of(), ids("qty = (SELECT name FROM items WHERE id = 1)"));
+        assertEquals(List.of(), ids("qty != (SELECT name FROM items WHERE id = 1)"));
+    }
+
     // Functions
 
     @Test
@@ -130,6 +150,8 @@ class ExpressionsTest {
         assertEquals("pen-1-Oslo", value("CONCAT(name, '-', id, '-', city)"));
         assertEquals("x", value("TRIM('  x  ')"));
         assertEquals("pin", value("REPLACE(name, 'e', 'i')"));
+        // As in MySQL, replacing empty text changes nothing
+        assertEquals("pen", value("REPLACE(name, '', 'z')"));
         assertEquals("42", value("UPPER(42)"));
     }
 
@@ -386,5 +408,14 @@ class ExpressionsTest {
             }
             assertEquals((float) ((double) a / c), select("SELECT a / c AS v FROM n").get(0).get("v"));
         }
+    }
+
+    @Test
+    void numbersWithAnExponent() {
+        assertEquals(1000f, value("1e3"));
+        assertEquals(0.025f, value("2.5E-2"));
+        assertEquals(150f, value("1.5e+2"));
+        assertEquals("Number 1e400 is out of range", parseFails("SELECT 1e400 FROM items"));
+        assertEquals("Expected a whole number after LIMIT, got '1e2' at position 28", parseFails("SELECT id FROM items LIMIT 1e2"));
     }
 }

@@ -256,7 +256,21 @@ public class QueryEngine {
     // Steps: join, WHERE, group, HAVING, sort, LIMIT/OFFSET, and only then pick the columns, so ORDER BY
     // can use a column that isn't selected.
     public List<Row> select(SelectQuery query) {
+        return run(query).rows();
+    }
+
+    // A SELECT's rows with its column labels in order, so empty values can be shown too
+    public record Result(List<String> columns, List<Row> rows) {}
+
+    public Result run(SelectQuery query) {
         Plan plan = plan(query);
+        List<String> columns = plan.output().isEmpty()
+                ? plan.scope().columns(null).stream().map(ColumnRef::key).toList()
+                : List.copyOf(plan.output().keySet());
+        return new Result(columns, rows(query, plan));
+    }
+
+    private List<Row> rows(SelectQuery query, Plan plan) {
         // One first-table row at a time through the joins and WHERE, so a LIMIT can stop the reading early
         List<Row> matching = new ArrayList<>();
         Iterator<Row> firstRows = plan.accesses().get(0).read();

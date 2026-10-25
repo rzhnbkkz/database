@@ -1,5 +1,6 @@
 package db.query;
 
+import db.model.DataType;
 import db.model.Row;
 
 import java.util.List;
@@ -68,15 +69,15 @@ public class Condition implements Expression {
         // Like SQL NULL, comparing an empty cell is unknown, so it never matches, even with NOT
         if (cell == null || other == null) return null;
         Integer cmp = compare(cell, other);
-        if (operator == Operator.NOT_EQUALS) return cmp == null || cmp != 0;
-        if (cmp == null) return false;
+        // Different kinds are rejected by resolve; a pair that slips through (a subquery's value) is unknown
+        if (cmp == null) return null;
         return switch (operator) {
             case EQUALS -> cmp == 0;
+            case NOT_EQUALS -> cmp != 0;
             case GREATER -> cmp > 0;
             case LESS -> cmp < 0;
             case GREATER_OR_EQUAL -> cmp >= 0;
             case LESS_OR_EQUAL -> cmp <= 0;
-            case NOT_EQUALS -> throw new AssertionError();
         };
     }
 
@@ -98,7 +99,23 @@ public class Condition implements Expression {
             }
         }
         if (value instanceof SelectItem item) resolved = item.resolve(scope);
-        return new Condition(column.resolve(scope), operator, resolved);
+        Condition condition = new Condition(column.resolve(scope), operator, resolved);
+        // Like name * 2, comparing different types is reported before any row is read
+        DataType left = condition.column.type(scope);
+        DataType right = resolved instanceof SelectItem item ? item.type(scope) : Literal.of(resolved);
+        if (!comparable(left, right)) {
+            // A plain value is shown as written ('2', not 2)
+            String shown = resolved instanceof SelectItem ? condition.toString()
+                    : new Condition(condition.column, operator, new Literal(resolved)).toString();
+            throw new IllegalArgumentException("Can't compare " + left + " with " + right + ": " + shown);
+        }
+        return condition;
+    }
+
+    // Unknown types (NULL, a subquery's value) are checked when rows are read
+    private static boolean comparable(DataType a, DataType b) {
+        if (a == null || b == null || a == b) return true;
+        return SelectItem.isNumber(a) && SelectItem.isNumber(b);
     }
 
     // A column that becomes a value (an outer row's, in a subquery) is stored as a plain value, so an index

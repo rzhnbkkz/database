@@ -82,6 +82,7 @@ public class SelectStatement implements Statement{
     }
 
     public void execute(QueryEngine engine) {
-        System.out.println(engine.select(query));
+        QueryEngine.Result result = engine.run(query);
+        System.out.println(ResultTable.format(result.columns(), result.rows()));
     }
 }

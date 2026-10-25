@@ -63,6 +63,12 @@ public class Lexer {
             pos++;
             while (Character.isDigit(peek(0))) pos++;
         }
+        // An exponent: 1e5, 2.5E-3
+        if ((peek(0) == 'e' || peek(0) == 'E')
+                && (Character.isDigit(peek(1)) || ((peek(1) == '+' || peek(1) == '-') && Character.isDigit(peek(2))))) {
+            pos += 2;
+            while (Character.isDigit(peek(0))) pos++;
+        }
         tokens.add(new Token(TokenType.NUMBER, input.substring(start, pos), start + 1));
     }
 

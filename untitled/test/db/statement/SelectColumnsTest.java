@@ -80,12 +80,26 @@ class SelectColumnsTest {
 
     @Test
     void printsOnlyRequestedColumnsInRequestedOrder() {
-        assertEquals("[{name=Alice, id=1}, {name=Bob, id=2}, {id=3}]", run("SELECT name, id FROM users"));
+        assertEquals("""
+                +-------+----+
+                | name  | id |
+                +-------+----+
+                | Alice |  1 |
+                | Bob   |  2 |
+                | NULL  |  3 |
+                +-------+----+
+                3 rows in set""", run("SELECT name, id FROM users"));
     }
 
     @Test
     void combinesColumnsWithWhere() {
-        assertEquals("[{name=Bob}]", run("SELECT name FROM users WHERE active = FALSE"));
+        assertEquals("""
+                +------+
+                | name |
+                +------+
+                | Bob  |
+                +------+
+                1 row in set""", run("SELECT name FROM users WHERE active = FALSE"));
     }
 
     @Test

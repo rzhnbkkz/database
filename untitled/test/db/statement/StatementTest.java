@@ -14,7 +14,6 @@ import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
-import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 
@@ -44,17 +43,8 @@ class StatementTest {
         System.setOut(originalOut);
     }
 
-    // Rows don't guarantee column order, so compare each printed row's "key=value" cells sorted
-    private static List<List<String>> sortedCells(String printed) {
-        String inner = printed.substring(1, printed.length() - 1);
-        if (inner.isEmpty()) return List.of();
-        return Arrays.stream(inner.split("}, \\{"))
-                .map(row -> Arrays.stream(row.replaceAll("[{}]", "").split(", ")).sorted().toList())
-                .toList();
-    }
-
     private void assertPrinted(String expected) {
-        assertEquals(sortedCells(expected), sortedCells(output.toString().trim()));
+        assertEquals(expected.strip(), output.toString().strip());
     }
 
     @Test
@@ -112,19 +102,32 @@ class StatementTest {
     @Test
     void selectStatementPrintsAllRows() {
         new SelectStatement("users").execute(engine);
-        assertPrinted("[{id=1, name=Alice}, {id=2, name=Bob}]");
+        assertPrinted("""
+                +----+-------+
+                | id | name  |
+                +----+-------+
+                |  1 | Alice |
+                |  2 | Bob   |
+                +----+-------+
+                2 rows in set""");
     }
 
     @Test
     void selectStatementPrintsOnlyMatchingRows() {
         new SelectStatement("users", new Condition("name", "Bob")).execute(engine);
-        assertPrinted("[{id=2, name=Bob}]");
+        assertPrinted("""
+                +----+------+
+                | id | name |
+                +----+------+
+                |  2 | Bob  |
+                +----+------+
+                1 row in set""");
     }
 
     @Test
-    void selectStatementPrintsEmptyListWhenNothingMatches() {
+    void selectStatementPrintsEmptySetWhenNothingMatches() {
         new SelectStatement("users", new Condition("name", "Zoe")).execute(engine);
-        assertPrinted("[]");
+        assertPrinted("Empty set");
     }
 
     @Test
@@ -133,7 +136,13 @@ class StatementTest {
         assertEquals("1 row inserted", output.toString().trim());
         output.reset();
         Parser.parse("SELECT * FROM users WHERE id = 3").execute(engine);
-        assertPrinted("[{id=3, name=Carol}]");
+        assertPrinted("""
+                +----+-------+
+                | id | name  |
+                +----+-------+
+                |  3 | Carol |
+                +----+-------+
+                1 row in set""");
     }
 
     @Test

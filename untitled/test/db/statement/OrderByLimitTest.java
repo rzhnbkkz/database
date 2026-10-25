@@ -239,7 +239,14 @@ class OrderByLimitTest {
     @Test
     void printsSortedAndLimitedRows() {
         run("SELECT name FROM users ORDER BY name DESC LIMIT 2");
-        assertEquals("[{name=Dan}, {name=Carol}]", output.toString().trim());
+        assertEquals("""
+                +-------+
+                | name  |
+                +-------+
+                | Dan   |
+                | Carol |
+                +-------+
+                2 rows in set""", output.toString().trim());
     }
 
     // EXPLAIN

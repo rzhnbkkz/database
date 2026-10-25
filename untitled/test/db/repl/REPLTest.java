@@ -62,27 +62,63 @@ class REPLTest {
 
     @Test
     void executesCommandsUntilExit() {
-        run("INSERT INTO users VALUES (2, 'Bob')\nSELECT * FROM users WHERE name = 'Bob'\nEXIT\nSELECT * FROM users\n");
+        run("INSERT INTO users VALUES (2, 'Bob');\nSELECT * FROM users WHERE name = 'Bob';\nEXIT\nSELECT * FROM users;\n");
 
         assertEquals(2, users.getRows().size());
-        assertTrue(output.toString().contains("id=2") && output.toString().contains("name=Bob"));
+        assertTrue(output.toString().contains("|  2 | Bob  |"));
         assertFalse(output.toString().contains("Alice"), "commands after EXIT must not run");
     }
 
     @Test
     void printsErrorAndKeepsRunningAfterBadCommand() {
-        run("TRUNCATE users\nINSERT INTO users (id) VALUES ('oops')\nSELECT FROM users\nSELECT * FROM users\nEXIT\n");
+        run("TRUNCATE users;\nINSERT INTO users (id) VALUES ('oops');\nSELECT FROM users;\nSELECT * FROM users;\nEXIT\n");
 
         String out = output.toString();
         assertTrue(out.contains("Command TRUNCATE is unrecognized"));
         assertTrue(out.contains("Column 'id' expects INTEGER"));
         assertTrue(out.contains("Expected a value, got keyword 'FROM' at position 8"));
-        assertTrue(out.contains("id=1") && out.contains("name=Alice"));
+        assertTrue(out.contains("|  1 | Alice |"));
     }
 
     @Test
     void endOfInputStopsTheLoop() {
         // e.g. the user presses Ctrl+D instead of typing EXIT
-        assertDoesNotThrow(() -> run("SELECT * FROM users\n"));
+        assertDoesNotThrow(() -> run("SELECT * FROM users;\n"));
     }
+
+    @Test
+    void statementCanSpanSeveralLines() {
+        run("SELECT name\n  FROM users\n  WHERE id = 1;\nEXIT\n");
+
+        String out = output.toString();
+        assertTrue(out.contains("    -> "), "a continuation prompt is shown");
+        assertTrue(out.contains("| Alice |"), out);
+        assertFalse(out.contains("unrecognized"), out);
+    }
+
+    @Test
+    void severalStatementsOnOneLine() {
+        run("INSERT INTO users VALUES (2, 'Bob'); INSERT INTO users VALUES (3, 'Carol');\nEXIT\n");
+        assertEquals(3, users.getRows().size());
+    }
+
+    @Test
+    void semicolonInsideTextDoesNotEndTheStatement() {
+        run("INSERT INTO users VALUES (2, 'a;b');\nINSERT INTO users VALUES (3, 'it''s;');\nEXIT\n");
+        assertEquals("a;b", users.getRows().get(1).get("name"));
+        assertEquals("it's;", users.getRows().get(2).get("name"));
+    }
+
+    @Test
+    void unfinishedStatementRunsAtEndOfInput() {
+        run("INSERT INTO users VALUES (2, 'Bob')\n");
+        assertEquals(2, users.getRows().size());
+    }
+
+    @Test
+    void exitWithSemicolon() {
+        run("EXIT;\nINSERT INTO users VALUES (2, 'Bob');\n");
+        assertEquals(1, users.getRows().size());
+    }
+
 }

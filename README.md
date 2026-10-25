@@ -1,108 +1,172 @@
-## Java Database Engine
-impl
-A relational database engine built from scratch in Java, modeled after MySQL.
+# Java Database Engine
 
-## Current Features
-- In-memory storage with typed columns (INTEGER, VARCHAR, BOOLEAN, FLOAT)
-- Schema validation on insert and update (types and column names)
-- Primary keys: unique and never empty (`id INTEGER PRIMARY KEY`), optionally `AUTO_INCREMENT`
-- Column options `NOT NULL` and `DEFAULT <value>`, and `DEFAULT` as a value in INSERT and UPDATE
-- Multi-row INSERT (`VALUES (...), (...)`), all-or-nothing
-- `DROP TABLE [IF EXISTS]`, `CREATE TABLE IF NOT EXISTS`, and `ALTER TABLE` to add, drop and rename columns or rename the table
-- SQL parser (lexer + recursive descent) with error messages that point at the problem, e.g. `Expected FROM, got 'users' at position 10`
-- Interactive REPL supporting CREATE TABLE, INSERT, SELECT, UPDATE and DELETE
-- WHERE conditions with `=`, `!=`, `<>`, `>`, `<`, `>=`, `<=`, combined with AND, OR, NOT and parentheses. NOT binds tightest, then AND, then OR, as in SQL
-- SQL-style NULL logic: comparing an empty cell is *unknown*, so it never matches, not even under NOT
-- Choosing columns in SELECT, qualified as `table.column` and `table.*`, with `AS` aliases that GROUP BY, HAVING and ORDER BY can use
-- `SELECT DISTINCT`, and `COUNT(DISTINCT column)` (also SUM, AVG, MIN, MAX)
-- `IS [NOT] NULL`, `[NOT] IN (...)`, `[NOT] BETWEEN ... AND ...`, `[NOT] LIKE 'pattern'`
-- Expressions everywhere a value goes (select list, WHERE/ON/HAVING, GROUP BY, ORDER BY, aggregates, `UPDATE ... SET`, `VALUES`): `+ - * / %`, parentheses, `CASE`, and the functions UPPER, LOWER, LENGTH, TRIM, CONCAT, SUBSTRING, REPLACE, ABS, ROUND, FLOOR, CEIL, COALESCE, IFNULL, NULLIF
-- `GROUP BY` and `ORDER BY` by position in the select list (`ORDER BY 2`), as in MySQL
-- Subqueries: `[NOT] IN (SELECT ...)`, `[NOT] EXISTS (SELECT ...)` and `(SELECT ...)` as a value, also using the outer query's columns (correlated)
-- JOIN: `INNER JOIN` and `LEFT [OUTER] JOIN ... ON`, chained, with table aliases (`users u` or `users AS u`), including self joins
-- Comparing two columns (`ON u.id = o.user_id`, `WHERE price > cost`)
-- Name checking like MySQL: unknown columns and tables are errors, and so is a column name found in more than one joined table
-- Values: numbers, `TRUE`/`FALSE`, `NULL` and quoted text (`'Bob Smith'`, `"Bob Smith"`, `'O''Brien'`)
-- Keywords can be used as names in backticks (`` `from` ``)
-- ORDER BY on one or more columns, ASC or DESC, including columns that aren't selected; LIMIT with OFFSET (or MySQL's `LIMIT offset, count`)
-- Aggregates `COUNT(*)`, `COUNT(column)`, `SUM`, `AVG`, `MIN`, `MAX` with `GROUP BY` on one or more columns; ORDER BY can sort by an aggregate
-- HAVING to filter groups, comparing aggregates and GROUP BY columns with values or each other (`HAVING MAX(age) > AVG(age)`)
-- Indexes: `CREATE [UNIQUE] INDEX` on one or more columns, `DROP INDEX`, `SHOW INDEX`, plus an automatic `PRIMARY` index on the primary key. They are sorted, like MySQL's default B-tree indexes, so they speed up both `column = value` and ranges (`<`, `<=`, `>`, `>=`, and two ends combined like `age >= 18 AND age < 30`) in WHERE (SELECT, UPDATE, DELETE) and on the joined table's side of ON (`ON a.x = b.y`, `ON o.total > u.min_total`). An ORDER BY that matches an index is read in index order instead of being sorted, and LIMIT then stops reading early
-- UNIQUE indexes reject duplicate values on INSERT and UPDATE (several empty cells are fine, as in MySQL)
-- `EXPLAIN SELECT ...` shows, per table, whether it is read with an index or a full scan
-- Saving tables to JSON files and loading them back (SAVE / LOAD), including their indexes, column options and AUTO_INCREMENT counter
+A relational database engine built from scratch in Java, modeled after MySQL. Consists of a lexer, a recursive-descent parser, a query planner with sorted (B-tree style) indexes and an interactive prompt.
 
-## Usage
+It handles SQL including joins, subqueries (correlated as well), GROUP BY and HAVING, expressions and functions, and SQL's NULL logic.
+
 ```
+Input a command or type EXIT to exit: SELECT id, name, city FROM users;
++----+-------+------+
+| id | name  | city |
++----+-------+------+
+|  1 | Alice | Oslo |
+|  2 | Bob   | NULL |
++----+-------+------+
+2 rows in set
+```
+
+## Highlights
+- **SQL**: CREATE / ALTER / DROP TABLE, INSERT, SELECT, UPDATE, DELETE
+- **Queries**: `INNER` and `LEFT` joins, `WHERE`, `GROUP BY`, `HAVING`, `ORDER BY`, `LIMIT`, `DISTINCT`
+- **Subqueries**: `IN`, `EXISTS` and `(SELECT ...)` used as a value, including correlated ones
+- **Expressions**: arithmetic, `CASE`, and 14 functions (`UPPER`, `CONCAT`, `ROUND`, `COALESCE`, ...)
+- **Indexes**: single and multi-column, `UNIQUE`, used for `=`, ranges, joins and `ORDER BY`, with `EXPLAIN` to see the plan
+- **Schema**: primary keys, `AUTO_INCREMENT`, `NOT NULL`, `DEFAULT`, and type checks before any row is read
+- **Persistence**: `SAVE` and `LOAD` tables as JSON
+- **Errors that point at the problem**: `Expected FROM, got 'users' at position 10`
+
+## Example session
+```sql
 CREATE TABLE users (id INTEGER PRIMARY KEY AUTO_INCREMENT, name VARCHAR(50) NOT NULL, active BOOLEAN DEFAULT TRUE);
+CREATE TABLE orders (id INTEGER PRIMARY KEY, user_id INTEGER, total FLOAT);
 INSERT INTO users (name) VALUES ('Alice Smith'), ('Bob');
-INSERT INTO users VALUES (DEFAULT, 'Carol', FALSE);
-ALTER TABLE users ADD COLUMN level INTEGER NOT NULL DEFAULT 1;
-ALTER TABLE users RENAME COLUMN level TO rank;
-SELECT name, id FROM users WHERE active = TRUE AND id >= 1;
+INSERT INTO orders VALUES (10, 1, 9.5);
+
+-- Filtering, grouping, sorting
 SELECT * FROM users WHERE (id = 1 OR name = 'Bob') AND NOT active = FALSE;
-SELECT DISTINCT name FROM users WHERE name LIKE 'A%' AND id BETWEEN 1 AND 10 AND active IS NOT NULL;
 SELECT name AS who, COUNT(*) AS n FROM users WHERE id NOT IN (3, 4) GROUP BY who HAVING n > 0 ORDER BY n DESC;
 SELECT UPPER(name), CASE WHEN active = TRUE THEN 'yes' ELSE 'no' END FROM users WHERE LENGTH(name) > 3;
-UPDATE users SET rank = rank + 1 WHERE active = TRUE;
-SELECT name, (SELECT COUNT(*) FROM orders o WHERE o.user_id = u.id) AS orders FROM users u
-  WHERE EXISTS (SELECT 1 FROM orders o WHERE o.user_id = u.id AND o.total > 10);
-DELETE FROM users WHERE id NOT IN (SELECT user_id FROM orders WHERE user_id IS NOT NULL);
-CREATE TABLE orders (id INTEGER PRIMARY KEY, user_id INTEGER, total FLOAT);
-INSERT INTO orders VALUES (10, 1, 9.5);
+
+-- Joins
 SELECT u.name, o.total FROM users u JOIN orders o ON u.id = o.user_id WHERE o.total > 5;
-SELECT name, o.id FROM users u LEFT JOIN orders o ON u.id = o.user_id;
-SELECT u.name, o.total FROM users u JOIN orders o ON u.id = o.user_id ORDER BY o.total DESC, u.name LIMIT 10 OFFSET 20;
 SELECT u.name, COUNT(o.id), SUM(o.total) FROM users u LEFT JOIN orders o ON u.id = o.user_id
   GROUP BY u.name HAVING COUNT(o.id) > 0 ORDER BY SUM(o.total) DESC;
-UPDATE users SET active = TRUE, name = 'Bobby' WHERE name = 'Bob';
-DELETE FROM users WHERE id = 2;
-CREATE INDEX idx_user ON orders (user_id);
-CREATE UNIQUE INDEX idx_name ON users (name);
+
+-- Subqueries
+SELECT name, (SELECT COUNT(*) FROM orders o WHERE o.user_id = u.id) AS orders FROM users u
+  WHERE EXISTS (SELECT 1 FROM orders o WHERE o.user_id = u.id AND o.total > 10);
+
+-- Indexes
 CREATE INDEX idx_user_total ON orders (user_id, total);
-SELECT * FROM orders WHERE user_id = 1 AND total > 5;
-SELECT * FROM orders ORDER BY user_id, total LIMIT 10;
-EXPLAIN SELECT u.name, o.total FROM users u JOIN orders o ON u.id = o.user_id;
-SHOW INDEX FROM orders;
+EXPLAIN SELECT * FROM orders WHERE user_id = 1 AND total > 5;
+
+-- Saving
 SAVE users 'users.json';
 LOAD 'users.json';
 EXIT
 ```
-Types: `INTEGER` (or `INT`), `VARCHAR` (a length like `VARCHAR(50)` is accepted but not enforced), `BOOLEAN` (or `BOOL`), `FLOAT`. Keywords are case-insensitive and the trailing `;` is optional. SAVE and LOAD aren't standard SQL; they're this engine's own commands.
+More statements are listed below.
 
-In a join, `SELECT *` labels every column `table.column` (`u.id`, `o.id`), and chosen columns are labeled as written. ORDER BY compares values the same way WHERE does: numbers by value, text case-sensitively (`Bob` before `alice`), `FALSE` before `TRUE`. Empty cells come first, or last with DESC, as in MySQL, and rows that tie keep their table order. A query runs join → WHERE → GROUP BY → HAVING → sort → LIMIT/OFFSET → choose columns.
+---
 
-Aggregates follow SQL: empty cells are skipped (`COUNT(age)` counts only rows that have an age), `SUM` and `AVG` of no values are empty while `COUNT` is 0, and without GROUP BY the whole result is one row. `SUM` of an INTEGER column is a whole number; `AVG`, and `SUM` of a FLOAT column, are FLOAT. `MIN` and `MAX` work on any column and compare like WHERE (so text is case-sensitive), returning the column's own type. HAVING works like WHERE on the grouped rows: a column it names must be in GROUP BY, an empty aggregate (such as `MIN` of no values) never matches, and without GROUP BY the whole table is one group. Aggregates can't go in WHERE or ON. As in MySQL's default mode, a selected column that isn't inside an aggregate must be in GROUP BY, and `SELECT *` can't be grouped. Aggregates are labeled in upper case as `COUNT(*)` or `SUM(o.total)`, even when written in lower case.
+# Details
 
-`x BETWEEN a AND b` means `x >= a AND x <= b`, and `x IN (a, b)` means `x = a OR x = b`, as the SQL standard defines them, so `x NOT IN (1, NULL)` matches no row. `IS NULL` is the only test on an empty cell that is never unknown. LIKE uses `%` for any text and `_` for one character, `\` makes the next character literal, and like other text comparisons it is case-sensitive; a pattern with a fixed start (`'Al%'`) on an indexed text column reads an index range. As in MySQL, `AS` is optional (so `SELECT name id` means `name AS id`), an alias wins over a column with the same name in GROUP BY, HAVING and ORDER BY, aliases can't be used in WHERE, and with DISTINCT, ORDER BY can only use selected columns.
+## Supported SQL
+| Statement | Notes |
+|---|---|
+| `CREATE TABLE [IF NOT EXISTS] t (col TYPE [options], ...)` | options: `PRIMARY KEY`, `AUTO_INCREMENT`, `NOT NULL`, `DEFAULT <value>` |
+| `ALTER TABLE t ADD [COLUMN] ... \| DROP [COLUMN] c \| RENAME COLUMN a TO b \| RENAME [TO] name` | one change at a time |
+| `DROP TABLE [IF EXISTS] t` | |
+| `INSERT INTO t [(cols)] VALUES (...), (...)` | `DEFAULT` can be used as a value |
+| `SELECT [DISTINCT] ... FROM ... [JOIN ... ON ...] [WHERE] [GROUP BY] [HAVING] [ORDER BY] [LIMIT n [OFFSET m]]` | also MySQL's `LIMIT offset, count` |
+| `UPDATE t SET c = <expr>, ... [WHERE ...]` | |
+| `DELETE FROM t [WHERE ...]` | |
+| `CREATE [UNIQUE] INDEX name ON t (col, ...)`, `DROP INDEX name ON t`, `SHOW INDEX FROM t` | |
+| `EXPLAIN SELECT ...` | shows, per table, whether an index or a full scan is used |
+| `SAVE t 'file.json'`, `LOAD 'file.json'` | this engine's own commands, not standard SQL |
 
-Writes follow MySQL: a multi-row INSERT adds every row or none, and prints the AUTO_INCREMENT numbers it gave out. A column left out of an INSERT (or given `DEFAULT`) gets its DEFAULT, while an explicit NULL stays empty. AUTO_INCREMENT must be the INTEGER primary key; a NULL or missing value gets the next number, a number given by hand moves the counter past it, and numbers of deleted rows aren't reused (the counter is saved with the table). ALTER TABLE does one change at a time: a new NOT NULL column needs a DEFAULT when the table has rows, dropping a column also drops every index that uses it, and the primary key column can't be dropped.
+**Conditions**: `=`, `!=`, `<>`, `<`, `>`, `<=`, `>=`, `IS [NOT] NULL`, `[NOT] IN (...)`, `[NOT] BETWEEN ... AND ...`, `[NOT] LIKE`, `[NOT] EXISTS`, combined with `AND`, `OR`, `NOT` and parentheses. NOT binds tightest, then AND, then OR.
 
-Expressions follow MySQL: an empty (NULL) operand gives an empty result (also in CONCAT; COALESCE, IFNULL and NULLIF are the exceptions), `/` always gives a fraction and dividing by zero gives an empty result, whole numbers stay whole otherwise and overflowing them is an error, ROUND rounds halves away from zero and gives a whole number without decimals, SUBSTRING counts from 1 (negative from the end), and text functions take any value as text. Types are checked before rows are read (`name * 2` is an error). Unlike MySQL, an INTEGER column only takes whole numbers, so `SET n = n / 2` needs ROUND, FLOOR or CEIL. In `UPDATE ... SET`, every expression sees the row as it was before the update (standard SQL; `SET a = b, b = a` swaps). A condition's constant side is worked out while parsing, so `id = 1 + 2` still uses an index; something computed from the column (`id + 0 = 3`) can't. Once rows are grouped, a selected expression can be a GROUP BY expression or built from them (`CONCAT(UPPER(city), '!')` with `GROUP BY UPPER(city)`).
+**Functions**: UPPER, LOWER, LENGTH, TRIM, CONCAT, SUBSTRING, REPLACE, ABS, ROUND, FLOOR, CEIL, COALESCE, IFNULL, NULLIF. **Aggregates**: `COUNT(*)`, `COUNT([DISTINCT] x)`, `SUM`, `AVG`, `MIN`, `MAX`.
 
-Subqueries follow SQL: a name the subquery's own tables don't have is looked up in the outer query, so `o.user_id = u.id` uses the outer row's `u.id` (also from subqueries nested deeper). A subquery used as a value or after IN selects one column; as a value, no rows give an empty value and more than one row is an error, as in MySQL. `x IN (SELECT ...)` is FALSE when the subquery gives no rows, and like the SQL standard, `NOT IN` matches nothing once the subquery gives an empty value (use `WHERE ... IS NOT NULL` inside, or NOT EXISTS). A subquery without outer columns runs once; one with them runs for each outer row with those columns replaced by the row's values, so an index on the inner table helps a lot (2,000 users × 20,000 orders: 3.6 s without one, 16 ms with). EXISTS stops at the first row. Subqueries in UPDATE and DELETE see the table as it was before the change, so unlike MySQL they may read the table being changed. Not supported yet: subqueries in FROM, ANY/ALL, subqueries in INSERT VALUES, and showing subqueries in EXPLAIN.
+## Types and values
+- Types: `INTEGER` (or `INT`), `VARCHAR` (a length like `VARCHAR(50)` is accepted but not enforced), `BOOLEAN` (or `BOOL`), `FLOAT`.
+- Values: numbers (`42`, `-1.5`, `2.5e3`), `TRUE` / `FALSE`, `NULL`, and quoted text (`'Bob Smith'`, `"Bob Smith"`, `'O''Brien'`).
+- Keywords are case-insensitive. A keyword can be used as a name in backticks (`` `from` ``).
+- Types are checked before any row is read. `name * 2` is an error, and so is comparing different types (`id = '1'`, `name > 5`, `qty = TRUE`). INTEGER and FLOAT can be compared with each other. MySQL would convert the text to a number instead.
+- Unlike MySQL, an INTEGER column only takes whole numbers, so `SET n = n / 2` needs ROUND, FLOOR or CEIL.
 
-Joins are nested loops: without an index each row is compared with every row of the joined table, with an index on the joined column only the matching rows are looked up.
+## The REPL
+- Like the `mysql` client, a statement runs once a `;` ends it (outside quotes). A statement can span several lines, and one line can hold several statements.
+- `EXIT` needs no `;`. An unfinished statement runs when input ends.
+- SELECT prints a table, with empty cells shown as `NULL` and numbers right-aligned.
+- An error prints a message and the session continues.
 
-Indexes help `=` and ranges, but not `!=`, OR or NOT (those fall back to a full scan). A multi-column index is used from its first column on, like in MySQL: `=` on some leading columns, then optionally a range on the next one, so `(user_id, total)` helps `user_id = 1 AND total > 5` and `user_id = 1`, but not `total > 5` alone. The planner picks the index that narrows the most: a UNIQUE index with every column matched by `=`, then the most columns matched by `=`, then a range with both ends; any other conditions are still checked on the rows found. ORDER BY is read from an index when its columns are exactly that index's columns, all from the first table and all ASC or all DESC (and there is no GROUP BY); the index must match exactly, since extra columns would order rows that tie differently from a sort. With LIMIT and nothing left to sort, a query stops reading as soon as it has enough rows; EXPLAIN shows this as `stops reading early`. Rows found through an index come back in table order, so an index never changes a result. In a join, the first table can use an index from WHERE and each joined table one from its ON; WHERE conditions on joined tables are not used for lookups. On 3,000 users × 3,000 orders, `JOIN orders o ON u.id = o.user_id` went from about 4.9 s to 7 ms with an index on `orders(user_id)`, and on 100,000 rows `WHERE age >= 50000 AND age < 50100` went from 11 ms to 0.1 ms with an index on `age`, and `ORDER BY age DESC LIMIT 10` from 98 ms to 0.07 ms.
+## NULL logic
+- Comparing an empty cell is *unknown*, so it never matches, not even under NOT. `IS NULL` is the only test on an empty cell that is never unknown.
+- `x IN (a, b)` means `x = a OR x = b`, and `x BETWEEN a AND b` means `x >= a AND x <= b`, as the SQL standard defines them. So `x NOT IN (1, NULL)` matches no row.
+- In expressions, an empty operand gives an empty result, also in CONCAT. COALESCE, IFNULL and NULLIF are the exceptions.
 
-## Project Structure
+## Selecting and sorting
+- Columns can be qualified as `table.column` and `table.*`. In a join, `SELECT *` labels every column `table.column` (`u.id`, `o.id`). Chosen columns are labeled as written.
+- As in MySQL, `AS` is optional (`SELECT name id` means `name AS id`). An alias wins over a column with the same name in GROUP BY, HAVING and ORDER BY, and can't be used in WHERE.
+- GROUP BY and ORDER BY accept a position in the select list (`ORDER BY 2`).
+- ORDER BY can use columns that aren't selected, except with DISTINCT. It compares like WHERE: numbers by value, text case-sensitively (`Bob` before `alice`), `FALSE` before `TRUE`. Empty cells come first, or last with DESC. Rows that tie keep their table order.
+- LIKE uses `%` for any text and `_` for one character, and `\` makes the next character literal. Like other text comparisons, it is case-sensitive.
+- Unknown columns and tables are errors, and so is a column name found in more than one joined table.
+- A query runs in this order: join → WHERE → GROUP BY → HAVING → sort → LIMIT/OFFSET → choose columns.
+
+## Aggregates and HAVING
+- Empty cells are skipped (`COUNT(age)` counts only rows that have an age). `SUM` and `AVG` of no values are empty, while `COUNT` is 0. Without GROUP BY, the whole result is one row.
+- `SUM` of an INTEGER column is a whole number. `AVG`, and `SUM` of a FLOAT column, are FLOAT. `MIN` and `MAX` work on any column and return its type.
+- As in MySQL's default mode, a selected column that isn't inside an aggregate must be in GROUP BY, and `SELECT *` can't be grouped. A selected expression can be built from GROUP BY expressions (`CONCAT(UPPER(city), '!')` with `GROUP BY UPPER(city)`).
+- HAVING works like WHERE on the grouped rows, and can compare aggregates with each other (`HAVING MAX(age) > AVG(age)`). An empty aggregate never matches. Aggregates can't go in WHERE or ON.
+- Aggregates are labeled in upper case (`COUNT(*)`, `SUM(o.total)`), even when written in lower case.
+
+## Expressions
+Expressions work everywhere a value goes: the select list, WHERE / ON / HAVING, GROUP BY, ORDER BY, aggregates, `UPDATE ... SET` and `VALUES`. They follow MySQL:
+- `/` always gives a fraction, and dividing by zero gives an empty result. Whole numbers otherwise stay whole, and overflowing them is an error.
+- ROUND rounds halves away from zero. SUBSTRING counts from 1 (negative counts from the end). Text functions accept any value as text. `REPLACE(s, '', x)` leaves `s` unchanged.
+- In `UPDATE ... SET`, every expression sees the row as it was before the update, so `SET a = b, b = a` swaps.
+- A condition's constant side is worked out while parsing, so `id = 1 + 2` still uses an index. Something computed from the column (`id + 0 = 3`) can't.
+
+## Writes
+- A multi-row INSERT adds every row or none, and prints the AUTO_INCREMENT numbers it gave out.
+- A column left out of an INSERT (or given `DEFAULT`) gets its DEFAULT. An explicit NULL stays empty.
+- AUTO_INCREMENT must be on the INTEGER primary key. A NULL or missing value gets the next number, and a number given by hand moves the counter past it. Numbers of deleted rows aren't reused, and the counter is saved with the table.
+- Primary keys are unique and never empty. UNIQUE indexes reject duplicates on INSERT and UPDATE; several empty cells are fine, as in MySQL.
+- ALTER TABLE: a new NOT NULL column needs a DEFAULT when the table has rows. Dropping a column also drops every index that uses it. The primary key column can't be dropped.
+- SAVE stores a table's indexes, column options and AUTO_INCREMENT counter along with its rows.
+
+## Subqueries
+- A name the subquery's own tables don't have is looked up in the outer query, so `o.user_id = u.id` uses the outer row's `u.id`. This also works from subqueries nested deeper.
+- A subquery used as a value, or after IN, selects one column. As a value, no rows give an empty value, and more than one row is an error.
+- `x IN (SELECT ...)` is FALSE when the subquery gives no rows. Following the SQL standard, `NOT IN` matches nothing once the subquery gives an empty value; use `WHERE ... IS NOT NULL` inside it, or NOT EXISTS.
+- A subquery's value isn't known until it runs, so comparing it with another type is unknown and never matches, also with `!=`.
+- A subquery without outer columns runs once. One with them runs for each outer row, so an index on the inner table helps a lot. EXISTS stops at the first row.
+- Subqueries in UPDATE and DELETE see the table as it was before the change, so unlike MySQL they may read the table being changed.
+
+## Indexes and performance
+Indexes are sorted, like MySQL's default B-tree indexes. Every table gets an automatic `PRIMARY` index on its primary key.
+- **What they speed up**: `column = value` and ranges (`<`, `<=`, `>`, `>=`, or both ends like `age >= 18 AND age < 30`) in WHERE (SELECT, UPDATE, DELETE), and the joined table's side of ON (`ON a.x = b.y`, `ON o.total > u.min_total`). A LIKE pattern with a fixed start (`'Al%'`) on an indexed text column reads a range.
+- **What they don't**: `!=`, OR and NOT fall back to a full scan.
+- **Multi-column indexes** are used from the first column on: `=` on some leading columns, then optionally a range on the next one. So `(user_id, total)` helps `user_id = 1 AND total > 5` and `user_id = 1`, but not `total > 5` alone.
+- **Choosing an index**: the planner picks the one that narrows the most: a UNIQUE index with every column matched by `=`, then the most columns matched by `=`, then a range with both ends. Any other conditions are still checked on the rows found.
+- **ORDER BY** is read in index order when its columns are exactly an index's columns, all from the first table and all ASC or all DESC, with no GROUP BY. The match must be exact, because extra columns would order tied rows differently from a sort.
+- **LIMIT** with nothing left to sort stops reading once it has enough rows. EXPLAIN shows this as `stops reading early`.
+- **Joins** are nested loops. The first table can use an index from WHERE, and each joined table one from its ON. WHERE conditions on joined tables aren't used for lookups.
+- Rows found through an index come back in table order, so an index never changes a result.
+
+| Query | Without index | With index |
+|---|---|---|
+| `JOIN orders o ON u.id = o.user_id` (3,000 × 3,000 rows) | 4.9 s | 7 ms |
+| Correlated subquery (2,000 users × 20,000 orders) | 3.6 s | 16 ms |
+| `WHERE age >= 50000 AND age < 50100` (100,000 rows) | 11 ms | 0.1 ms |
+| `ORDER BY age DESC LIMIT 10` (100,000 rows) | 98 ms | 0.07 ms |
+
+## Project structure
 ```
 untitled/
 ├── src/db/
 │   ├── Main.java      entry point
 │   ├── model/         Table, Row, Column, DataType, Index (sorted index on one or more columns)
-│   ├── query/         QueryEngine (incl. joins); WHERE/ON as an Expression tree: Condition, And, Or, Not;
-│   │                  SelectQuery, Scope (name resolution), ColumnRef, Aggregate, TableRef, Join, OrderBy,
+│   ├── query/         QueryEngine (planning, joins, grouping); WHERE/ON as an Expression tree
+│   │                  (Condition, And, Or, Not, ...); value expressions (ColumnRef, Aggregate,
+│   │                  Arithmetic, FunctionCall, CaseWhen, Subquery); Scope (name resolution);
 │   │                  IndexLookup (index choice)
-│   ├── statement/     one class per command: Create, Insert, Select, Update, Delete, Save, Load,
-│   │                  CreateIndex, DropIndex, ShowIndex, Explain
+│   ├── statement/     one class per command, plus ResultTable (prints results as a table)
 │   ├── parser/        Lexer (text → tokens) and Parser (tokens → Statement)
 │   ├── storage/       TableSerializer / TableDeserializer (JSON files)
 │   └── repl/          REPL: the interactive prompt
 └── test/db/           JUnit 5 tests, same packages as src
 ```
-
-## Roadmap
-- DROP TABLE and ALTER TABLE
-- Subqueries

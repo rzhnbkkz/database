@@ -245,7 +245,7 @@ public class Parser {
     // A whole number, zero or more, for LIMIT and OFFSET
     private int parseCount(String what) {
         Token token = peek();
-        if (token.type() != TokenType.NUMBER || token.text().contains(".")) {
+        if (token.type() != TokenType.NUMBER || !isWhole(token.text())) {
             throw expected("a whole number after " + what);
         }
         index++;
@@ -639,7 +639,7 @@ public class Parser {
         };
         // The length is accepted for MySQL compatibility but not enforced
         if (type == DataType.VARCHAR && acceptSymbol("(")) {
-            if (peek().type() != TokenType.NUMBER || peek().text().contains(".")) throw expected("a length");
+            if (peek().type() != TokenType.NUMBER || !isWhole(peek().text())) throw expected("a length");
             index++;
             expectSymbol(")");
         }
@@ -780,14 +780,21 @@ public class Parser {
         }
         index++;
         String number = (negative ? "-" : "") + token.text();
-        if (!number.contains(".")) {
+        if (isWhole(token.text())) {
             try {
                 return Integer.parseInt(number);
             } catch (NumberFormatException e) {
                 // Too big for INTEGER, falls through to FLOAT
             }
         }
-        return Float.parseFloat(number);
+        float value = Float.parseFloat(number);
+        if (Float.isInfinite(value)) throw new IllegalArgumentException("Number " + number + " is out of range");
+        return value;
+    }
+
+    // Digits only: no decimal point or exponent
+    private static boolean isWhole(String number) {
+        return number.chars().allMatch(Character::isDigit);
     }
 
     private List<String> parseNameList(String what) {

@@ -152,7 +152,13 @@ class AggregateTest {
     void noRowsGiveCountZeroAndEmptySumAndAvg() {
         assertEquals(List.of(Map.of("COUNT(*)", 0, "COUNT(age)", 0)),
                 select("SELECT COUNT(*), COUNT(age), SUM(age), AVG(age) FROM users WHERE id = 99"));
-        assertEquals("[{}]", printed("SELECT SUM(age) FROM users WHERE id = 99"));
+        assertEquals("""
+                +----------+
+                | SUM(age) |
+                +----------+
+                | NULL     |
+                +----------+
+                1 row in set""", printed("SELECT SUM(age) FROM users WHERE id = 99"));
     }
 
     @Test
@@ -248,7 +254,14 @@ class AggregateTest {
 
     @Test
     void printsGroupedRows() {
-        assertEquals("[{city=Oslo, COUNT(*)=2}, {city=Rome, COUNT(*)=1}]",
+        assertEquals("""
+                +------+----------+
+                | city | COUNT(*) |
+                +------+----------+
+                | Oslo |        2 |
+                | Rome |        1 |
+                +------+----------+
+                2 rows in set""",
                 printed("SELECT city, COUNT(*) FROM users WHERE age > 0 GROUP BY city"));
     }
 

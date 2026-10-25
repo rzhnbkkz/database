@@ -213,7 +213,13 @@ class JoinTest {
     @Test
     void printsJoinedRows() {
         Parser.parse("SELECT u.name, o.id FROM users u JOIN orders o ON u.id = o.user_id WHERE o.id = 12").execute(engine);
-        assertEquals("[{u.name=Bob, o.id=12}]", output.toString().trim());
+        assertEquals("""
+                +--------+------+
+                | u.name | o.id |
+                +--------+------+
+                | Bob    |   12 |
+                +--------+------+
+                1 row in set""", output.toString().trim());
     }
 
     @Test
