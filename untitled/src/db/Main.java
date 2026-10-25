@@ -13,6 +13,10 @@ public class Main {
                     [[INNER | LEFT] JOIN <table> [<alias>] ON <condition>] ... [WHERE <condition>]
                   UPDATE <table> SET <column> = <value>, ... [WHERE ...]
                   DELETE FROM <table> [WHERE ...]
+                  CREATE INDEX <name> ON <table> (<column>)
+                  DROP INDEX <name> ON <table>
+                  SHOW INDEX FROM <table>
+                  EXPLAIN SELECT ...                shows which indexes a query uses
                   SAVE <table> '<path>'
                   LOAD '<path>'
                   EXIT

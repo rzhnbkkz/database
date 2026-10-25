@@ -10,12 +10,16 @@ import db.query.Join;
 import db.query.Not;
 import db.query.Or;
 import db.query.TableRef;
+import db.statement.CreateIndexStatement;
 import db.statement.CreateStatement;
 import db.statement.DeleteStatement;
+import db.statement.DropIndexStatement;
+import db.statement.ExplainStatement;
 import db.statement.InsertStatement;
 import db.statement.LoadStatement;
 import db.statement.SaveStatement;
 import db.statement.SelectStatement;
+import db.statement.ShowIndexStatement;
 import db.statement.Statement;
 import db.statement.UpdateStatement;
 
@@ -23,7 +27,8 @@ import java.util.*;
 
 // Recursive descent parser: one method per grammar rule, each consuming the tokens it recognises.
 //
-//   statement := (select | insert | update | delete | create | save | load) [';']
+//   statement := (select | insert | update | delete | create | createIdx | dropIdx | showIdx | explain
+//                 | save | load) [';']
 //   select    := SELECT ('*' | item {',' item}) FROM table {join} [where]
 //   item      := column | name '.' '*'
 //   column    := name ['.' name]          table.column, where table may be an alias
@@ -34,6 +39,10 @@ import java.util.*;
 //   delete    := DELETE FROM name [where]
 //   create    := CREATE TABLE name '(' columnDef {',' columnDef} ')'
 //   columnDef := name type ['(' NUMBER ')'] [PRIMARY KEY]
+//   createIdx := CREATE INDEX name ON name '(' name ')'
+//   dropIdx   := DROP INDEX name ON name
+//   showIdx   := SHOW (INDEX | INDEXES) FROM name
+//   explain   := EXPLAIN select
 //   save      := SAVE name STRING
 //   load      := LOAD STRING
 //   where     := WHERE or
@@ -62,6 +71,13 @@ public class Parser {
             case "UPDATE" -> parseUpdate();
             case "DELETE" -> parseDelete();
             case "CREATE" -> parseCreate();
+            case "DROP" -> parseDropIndex();
+            case "SHOW" -> parseShowIndex();
+            case "EXPLAIN" -> {
+                index++;
+                if (!peek().isKeyword("SELECT")) throw expected("SELECT");
+                yield new ExplainStatement((SelectStatement) parseSelect());
+            }
             case "SAVE" -> parseSave();
             case "LOAD" -> parseLoad();
             default -> throw new IllegalArgumentException("Command " + first.text() + " is unrecognized");
@@ -169,7 +185,8 @@ public class Parser {
 
     private Statement parseCreate() {
         expectKeyword("CREATE");
-        expectKeyword("TABLE");
+        if (acceptWord("INDEX")) return parseCreateIndex();
+        if (!acceptKeyword("TABLE")) throw expected("TABLE or INDEX");
         String table = expectName("table name");
         expectSymbol("(");
         List<Column> columns = new ArrayList<>();
@@ -187,6 +204,33 @@ public class Parser {
         } while (acceptSymbol(","));
         expectSymbol(")");
         return new CreateStatement(table, columns);
+    }
+
+    // After CREATE INDEX
+    private Statement parseCreateIndex() {
+        String name = expectName("index name");
+        expectKeyword("ON");
+        String table = expectName("table name");
+        expectSymbol("(");
+        String column = expectName("column name");
+        if (peek().isSymbol(",")) throw new IllegalArgumentException("An index can only cover one column");
+        expectSymbol(")");
+        return new CreateIndexStatement(name, table, column);
+    }
+
+    private Statement parseDropIndex() {
+        index++;
+        if (!acceptWord("INDEX")) throw expected("INDEX");
+        String name = expectName("index name");
+        expectKeyword("ON");
+        return new DropIndexStatement(name, expectName("table name"));
+    }
+
+    private Statement parseShowIndex() {
+        index++;
+        if (!acceptWord("INDEX") && !acceptWord("INDEXES")) throw expected("INDEX");
+        expectKeyword("FROM");
+        return new ShowIndexStatement(expectName("table name"));
     }
 
     // INTEGER (or INT), VARCHAR with an optional length like VARCHAR(50), BOOLEAN (or BOOL), FLOAT
@@ -324,6 +368,13 @@ public class Parser {
 
     private boolean acceptSymbol(String symbol) {
         if (!peek().isSymbol(symbol)) return false;
+        index++;
+        return true;
+    }
+
+    // A command word that isn't reserved (INDEX, like SAVE and LOAD, can still be a column name)
+    private boolean acceptWord(String word) {
+        if (peek().type() != TokenType.IDENTIFIER || !peek().text().equalsIgnoreCase(word)) return false;
         index++;
         return true;
     }

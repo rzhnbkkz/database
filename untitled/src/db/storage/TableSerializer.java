@@ -1,6 +1,7 @@
 package db.storage;
 
 import db.model.Column;
+import db.model.Index;
 import db.model.Row;
 import db.model.Table;
 
@@ -26,6 +27,18 @@ public class TableSerializer {
             sb.append("}");
         }
         sb.append(columns.isEmpty() ? "],\n" : "\n  ],\n");
+
+        // The PRIMARY index comes back with the primary key, so only the others are written
+        List<Index> indexes = table.getIndexes().stream().filter(i -> !i.getName().equals(Table.PRIMARY)).toList();
+        if (!indexes.isEmpty()) {
+            sb.append("  \"indexes\": [");
+            for (int i = 0; i < indexes.size(); i++) {
+                sb.append(i == 0 ? "\n" : ",\n");
+                sb.append("    {\"name\": ").append(quote(indexes.get(i).getName()))
+                  .append(", \"column\": ").append(quote(indexes.get(i).getColumn())).append("}");
+            }
+            sb.append("\n  ],\n");
+        }
 
         sb.append("  \"rows\": [");
         List<Row> rows = table.getRows();

@@ -1,29 +1,33 @@
 package db.model;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
-import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.function.Predicate;
 
 public class Table {
+    // Name of the index every table with a primary key gets, as in MySQL
+    public static final String PRIMARY = "PRIMARY";
+
     private final String name;
     private final List<Column> columns;
-    private final List<Row> rows;
+    // Rows by id, in insertion order. Ids never change, so indexes can point at rows.
+    private final Map<Long, Row> rows = new LinkedHashMap<>();
+    private long nextId = 0;
     private final Column primaryKey;
-    // Primary key values of every stored row, for fast uniqueness checks
-    private final Set<Object> keys = new HashSet<>();
+    private final Map<String, Index> indexes = new LinkedHashMap<>();
 
     public Table(String name, List<Column> columns) {
         this.name = name;
         this.columns = new ArrayList<>(columns);
-        this.rows = new ArrayList<>();
         List<Column> keyColumns = columns.stream().filter(Column::isPrimaryKey).toList();
         if (keyColumns.size() > 1) throw new IllegalArgumentException("A table can have only one primary key");
         this.primaryKey = keyColumns.isEmpty() ? null : keyColumns.get(0);
+        // The primary key index also makes the uniqueness check fast
+        if (primaryKey != null) indexes.put(PRIMARY, new Index(PRIMARY, primaryKey.getName()));
     }
 
     public void insert(Row row) {
@@ -31,31 +35,37 @@ public class Table {
         validate(row);
         if (primaryKey != null) {
             Object key = requireKey(row);
-            if (keys.contains(key)) throw duplicateKey(key);
-            keys.add(key);
+            if (!indexes.get(PRIMARY).lookup(key).isEmpty()) throw duplicateKey(key);
         }
-        rows.add(row);
+        long id = nextId++;
+        rows.put(id, row);
+        for (Index index : indexes.values()) index.add(id, row);
     }
 
     public int delete(Predicate<Row> filter) {
-        int before = rows.size();
-        rows.removeIf(row -> {
-            if (!filter.test(row)) return false;
-            if (primaryKey != null) keys.remove(row.get(primaryKey.getName()));
-            return true;
-        });
-        return before - rows.size();
+        return delete(null, filter);
+    }
+
+    // Only the rows with these ids are tested (every row when null), so an index can narrow the work
+    public int delete(Collection<Long> candidates, Predicate<Row> filter) {
+        List<Long> matches = matching(candidates, filter);
+        for (long id : matches) {
+            Row row = rows.remove(id);
+            for (Index index : indexes.values()) index.remove(id, row);
+        }
+        return matches.size();
     }
 
     public int update(Predicate<Row> filter, Map<String, Object> values) {
+        return update(null, filter, values);
+    }
+
+    public int update(Collection<Long> candidates, Predicate<Row> filter, Map<String, Object> values) {
         // Existing cells are already valid, so checking the new values is enough
         Row changes = normalize(values);
         validate(changes);
 
-        List<Integer> matches = new ArrayList<>();
-        for (int i = 0; i < rows.size(); i++) {
-            if (filter.test(rows.get(i))) matches.add(i);
-        }
+        List<Long> matches = matching(candidates, filter);
 
         // Check the primary key before changing anything, so a failed update leaves the table as it was
         if (primaryKey != null && changes.getData().containsKey(primaryKey.getName())) {
@@ -65,19 +75,74 @@ public class Table {
                         + "' to the same value on " + matches.size() + " rows");
             }
             if (matches.size() == 1) {
-                Object oldKey = rows.get(matches.get(0)).get(primaryKey.getName());
-                if (!newKey.equals(oldKey) && keys.contains(newKey)) throw duplicateKey(newKey);
-                keys.remove(oldKey);
-                keys.add(newKey);
+                for (long other : indexes.get(PRIMARY).lookup(newKey)) {
+                    if (other != matches.get(0)) throw duplicateKey(newKey);
+                }
             }
         }
 
-        for (int i : matches) {
-            Map<String, Object> data = new LinkedHashMap<>(rows.get(i).getData());
+        for (long id : matches) {
+            Row old = rows.get(id);
+            Map<String, Object> data = new LinkedHashMap<>(old.getData());
             data.putAll(changes.getData());
-            rows.set(i, normalize(data));
+            Row updated = normalize(data);
+            for (Index index : indexes.values()) {
+                index.remove(id, old);
+                index.add(id, updated);
+            }
+            rows.put(id, updated);
         }
         return matches.size();
+    }
+
+    // Ids of the rows that pass the filter, in table order, collected before anything changes
+    private List<Long> matching(Collection<Long> candidates, Predicate<Row> filter) {
+        List<Long> matches = new ArrayList<>();
+        for (long id : candidates == null ? rows.keySet() : candidates) {
+            Row row = rows.get(id);
+            if (row != null && filter.test(row)) matches.add(id);
+        }
+        return matches;
+    }
+
+    public void createIndex(String indexName, String column) {
+        if (indexName.equalsIgnoreCase(PRIMARY)) {
+            throw new IllegalArgumentException("The name " + PRIMARY + " is reserved for the primary key index");
+        }
+        if (indexes.containsKey(indexName)) {
+            throw new IllegalArgumentException("Index '" + indexName + "' already exists on table '" + name + "'");
+        }
+        if (columns.stream().noneMatch(col -> col.getName().equals(column))) {
+            throw new IllegalArgumentException("Unknown column '" + column + "'");
+        }
+        Index existing = getIndexOn(column);
+        if (existing != null) {
+            throw new IllegalArgumentException("Column '" + column + "' already has index '" + existing.getName() + "'");
+        }
+        Index index = new Index(indexName, column);
+        for (Map.Entry<Long, Row> entry : rows.entrySet()) index.add(entry.getKey(), entry.getValue());
+        indexes.put(indexName, index);
+    }
+
+    public void dropIndex(String indexName) {
+        if (indexName.equals(PRIMARY)) {
+            throw new IllegalArgumentException("Cannot drop the " + PRIMARY + " index, it belongs to the primary key");
+        }
+        if (indexes.remove(indexName) == null) {
+            throw new IllegalArgumentException("Index '" + indexName + "' does not exist on table '" + name + "'");
+        }
+    }
+
+    public List<Index> getIndexes() {
+        return List.copyOf(indexes.values());
+    }
+
+    // The index on this column, or null
+    public Index getIndexOn(String column) {
+        for (Index index : indexes.values()) {
+            if (index.getColumn().equals(column)) return index;
+        }
+        return null;
     }
 
     public Column getPrimaryKey() {
@@ -85,7 +150,17 @@ public class Table {
     }
 
     public List<Row> getRows() {
-        return Collections.unmodifiableList(rows);
+        return Collections.unmodifiableList(new ArrayList<>(rows.values()));
+    }
+
+    // The rows with these ids, in the order given; ids of deleted rows are skipped
+    public List<Row> getRows(Collection<Long> ids) {
+        List<Row> result = new ArrayList<>();
+        for (long id : ids) {
+            Row row = rows.get(id);
+            if (row != null) result.add(row);
+        }
+        return result;
     }
 
     public List<Column> getColumns() {

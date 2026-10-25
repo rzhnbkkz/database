@@ -16,7 +16,9 @@ A relational database engine built from scratch in Java, modeled after MySQL.
 - Name checking like MySQL: unknown columns and tables are errors, and so is a column name found in more than one joined table
 - Values: numbers, `TRUE`/`FALSE`, `NULL` and quoted text (`'Bob Smith'`, `"Bob Smith"`, `'O''Brien'`)
 - Keywords can be used as names in backticks (`` `from` ``)
-- Saving tables to JSON files and loading them back (SAVE / LOAD)
+- Indexes: `CREATE INDEX`, `DROP INDEX`, `SHOW INDEX`, plus an automatic `PRIMARY` index on the primary key. They speed up `column = value` in WHERE (SELECT, UPDATE, DELETE) and the joined table's side of `ON a.x = b.y`
+- `EXPLAIN SELECT ...` shows, per table, whether it is read with an index or a full scan
+- Saving tables to JSON files and loading them back (SAVE / LOAD), including their indexes
 
 ## Usage
 ```
@@ -31,23 +33,29 @@ SELECT u.name, o.total FROM users u JOIN orders o ON u.id = o.user_id WHERE o.to
 SELECT name, o.id FROM users u LEFT JOIN orders o ON u.id = o.user_id;
 UPDATE users SET active = TRUE, name = 'Bobby' WHERE name = 'Bob';
 DELETE FROM users WHERE id = 2;
+CREATE INDEX idx_user ON orders (user_id);
+EXPLAIN SELECT u.name, o.total FROM users u JOIN orders o ON u.id = o.user_id;
+SHOW INDEX FROM orders;
 SAVE users 'users.json';
 LOAD 'users.json';
 EXIT
 ```
 Types: `INTEGER` (or `INT`), `VARCHAR` (a length like `VARCHAR(50)` is accepted but not enforced), `BOOLEAN` (or `BOOL`), `FLOAT`. Keywords are case-insensitive and the trailing `;` is optional. SAVE and LOAD aren't standard SQL; they're this engine's own commands.
 
-In a join, `SELECT *` labels every column `table.column` (`u.id`, `o.id`), and chosen columns are labeled as written. Joins are nested loops, so they compare every pair of rows.
+In a join, `SELECT *` labels every column `table.column` (`u.id`, `o.id`), and chosen columns are labeled as written. Joins are nested loops: without an index each row is compared with every row of the joined table, with an index on the joined column only the matching rows are looked up.
+
+Indexes are hash indexes on one column, so they help `=` only (not `<`, `>`, `!=`, OR or NOT; under OR or NOT the query falls back to a full scan). In a join, the first table can use an index from WHERE and each joined table one from its ON; WHERE conditions on joined tables are not used for lookups. On 3,000 users × 3,000 orders, `JOIN orders o ON u.id = o.user_id` went from about 4.9 s to 7 ms with an index on `orders(user_id)`.
 
 ## Project Structure
 ```
 untitled/
 ├── src/db/
 │   ├── Main.java      entry point
-│   ├── model/         Table, Row, Column, DataType
+│   ├── model/         Table, Row, Column, DataType, Index (hash index on one column)
 │   ├── query/         QueryEngine (incl. joins); WHERE/ON as an Expression tree: Condition, And, Or, Not;
-│   │                  Scope (name resolution), ColumnRef, TableRef, Join
-│   ├── statement/     one class per command: Create, Insert, Select, Update, Delete, Save, Load
+│   │                  Scope (name resolution), ColumnRef, TableRef, Join, IndexLookup (index choice)
+│   ├── statement/     one class per command: Create, Insert, Select, Update, Delete, Save, Load,
+│   │                  CreateIndex, DropIndex, ShowIndex, Explain
 │   ├── parser/        Lexer (text → tokens) and Parser (tokens → Statement)
 │   ├── storage/       TableSerializer / TableDeserializer (JSON files)
 │   └── repl/          REPL: the interactive prompt
@@ -55,4 +63,6 @@ untitled/
 ```
 
 ## Roadmap
-- Indexing
+- ORDER BY and LIMIT
+- Aggregates: COUNT, SUM, GROUP BY
+- Range indexes (sorted, for `<` and `>`)

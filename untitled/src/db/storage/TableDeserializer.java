@@ -13,7 +13,9 @@ import java.util.*;
 
 /**
  * Reads tables in the JSON format written by {@link TableSerializer}:
- * {"name": ..., "columns": [{"name": ..., "type": ...}], "rows": [{col: value, ...}]}
+ * {"name": ..., "columns": [{"name": ..., "type": ...}], "indexes": [{"name": ..., "column": ...}],
+ *  "rows": [{col: value, ...}]}
+ * "indexes" and "rows" may be left out.
  */
 public class TableDeserializer {
 
@@ -40,6 +42,15 @@ public class TableDeserializer {
         }
 
         Table table = new Table(name, columns);
+
+        Object indexesValue = obj.get("indexes");
+        if (indexesValue != null) {
+            for (Object item : asArray(indexesValue, "indexes")) {
+                Map<String, Object> indexObj = asObject(item, "index");
+                table.createIndex(asString(require(indexObj, "name"), "index name"),
+                        asString(require(indexObj, "column"), "index column"));
+            }
+        }
 
         Object rowsValue = obj.get("rows");
         if (rowsValue == null) return table;

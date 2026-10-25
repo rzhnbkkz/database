@@ -71,10 +71,10 @@ class REPLTest {
 
     @Test
     void printsErrorAndKeepsRunningAfterBadCommand() {
-        run("DROP users\nINSERT INTO users (id) VALUES ('oops')\nSELECT FROM users\nSELECT * FROM users\nEXIT\n");
+        run("TRUNCATE users\nINSERT INTO users (id) VALUES ('oops')\nSELECT FROM users\nSELECT * FROM users\nEXIT\n");
 
         String out = output.toString();
-        assertTrue(out.contains("Command DROP is unrecognized"));
+        assertTrue(out.contains("Command TRUNCATE is unrecognized"));
         assertTrue(out.contains("Column 'id' expects INTEGER"));
         assertTrue(out.contains("Expected column name, got keyword 'FROM' at position 8"));
         assertTrue(out.contains("id=1") && out.contains("name=Alice"));

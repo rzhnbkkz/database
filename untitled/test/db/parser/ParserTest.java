@@ -180,8 +180,8 @@ class ParserTest {
 
     @Test
     void rejectsUnknownCommand() {
-        IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> Parser.parse("DROP users"));
-        assertEquals("Command DROP is unrecognized", e.getMessage());
+        IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> Parser.parse("TRUNCATE users"));
+        assertEquals("Command TRUNCATE is unrecognized", e.getMessage());
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("42"));
     }
 
