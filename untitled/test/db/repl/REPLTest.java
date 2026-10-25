@@ -62,7 +62,7 @@ class REPLTest {
 
     @Test
     void executesCommandsUntilExit() {
-        run("INSERT users id=2 name=Bob\nSELECT users WHERE name=Bob\nEXIT\nSELECT users\n");
+        run("INSERT INTO users VALUES (2, 'Bob')\nSELECT * FROM users WHERE name = 'Bob'\nEXIT\nSELECT * FROM users\n");
 
         assertEquals(2, users.getRows().size());
         assertTrue(output.toString().contains("id=2") && output.toString().contains("name=Bob"));
@@ -71,17 +71,18 @@ class REPLTest {
 
     @Test
     void printsErrorAndKeepsRunningAfterBadCommand() {
-        run("DROP users\nINSERT users id=oops\nSELECT users\nEXIT\n");
+        run("DROP users\nINSERT INTO users (id) VALUES ('oops')\nSELECT FROM users\nSELECT * FROM users\nEXIT\n");
 
         String out = output.toString();
         assertTrue(out.contains("Command DROP is unrecognized"));
         assertTrue(out.contains("Column 'id' expects INTEGER"));
+        assertTrue(out.contains("Expected column name, got keyword 'FROM' at position 8"));
         assertTrue(out.contains("id=1") && out.contains("name=Alice"));
     }
 
     @Test
     void endOfInputStopsTheLoop() {
         // e.g. the user presses Ctrl+D instead of typing EXIT
-        assertDoesNotThrow(() -> run("SELECT users\n"));
+        assertDoesNotThrow(() -> run("SELECT * FROM users\n"));
     }
 }

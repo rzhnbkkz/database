@@ -34,11 +34,11 @@ class PrimaryKeyTest {
     void setUp() {
         System.setOut(new PrintStream(new ByteArrayOutputStream()));
         engine = new QueryEngine();
-        run("CREATE users id:INTEGER:PRIMARY name:VARCHAR");
+        run("CREATE TABLE users (id INTEGER PRIMARY KEY, name VARCHAR)");
         users = engine.getTable("users");
-        run("INSERT users id=1 name=Alice");
-        run("INSERT users id=2 name=Bob");
-        run("INSERT users id=3 name=Carol");
+        run("INSERT INTO users VALUES (1, 'Alice')");
+        run("INSERT INTO users VALUES (2, 'Bob')");
+        run("INSERT INTO users VALUES (3, 'Carol')");
     }
 
     @AfterEach
@@ -62,7 +62,7 @@ class PrimaryKeyTest {
 
     @Test
     void createMarksPrimaryKeyColumn() {
-        CreateStatement s = (CreateStatement) Parser.parse("CREATE t code:VARCHAR:primary n:INTEGER");
+        CreateStatement s = (CreateStatement) Parser.parse("CREATE TABLE t (code VARCHAR primary key, n INTEGER)");
         assertTrue(s.getColumns().get(0).isPrimaryKey());
         assertFalse(s.getColumns().get(1).isPrimaryKey());
         assertEquals("id", users.getPrimaryKey().getName());
@@ -70,44 +70,45 @@ class PrimaryKeyTest {
 
     @Test
     void tableWithoutPrimaryKeyHasNone() {
-        run("CREATE logs msg:VARCHAR");
+        run("CREATE TABLE logs (msg VARCHAR)");
         assertNull(engine.getTable("logs").getPrimaryKey());
-        run("INSERT logs msg=a");
-        run("INSERT logs msg=a");
+        run("INSERT INTO logs VALUES ('a')");
+        run("INSERT INTO logs VALUES ('a')");
         assertEquals(2, engine.getTable("logs").getRows().size(), "duplicates are fine without a key");
     }
 
     @Test
     void rejectsMoreThanOnePrimaryKey() {
-        assertEquals("A table can have only one primary key", fails("CREATE t a:INTEGER:PRIMARY b:INTEGER:PRIMARY").getMessage());
+        assertEquals("A table can have only one primary key", fails("CREATE TABLE t (a INTEGER PRIMARY KEY, b INTEGER PRIMARY KEY)").getMessage());
         assertNull(engine.getTable("t"));
     }
 
     @Test
     void rejectsUnknownColumnModifier() {
         IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
-                () -> Parser.parse("CREATE t id:INTEGER:UNIQUE"));
-        assertEquals("Expected PRIMARY after the type, got: UNIQUE", e.getMessage());
+                () -> Parser.parse("CREATE TABLE t (id INTEGER UNIQUE)"));
+        assertEquals("Expected ')', got 'UNIQUE' at position 28", e.getMessage());
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("CREATE TABLE t (id INTEGER PRIMARY)"));
     }
 
     @Test
     void primaryKeyCanBeText() {
-        run("CREATE codes code:VARCHAR:PRIMARY");
-        run("INSERT codes code=\"A 1\"");
-        assertEquals("Duplicate primary key: code=A 1", fails("INSERT codes code=\"A 1\"").getMessage());
+        run("CREATE TABLE codes (code VARCHAR PRIMARY KEY)");
+        run("INSERT INTO codes VALUES ('A 1')");
+        assertEquals("Duplicate primary key: code=A 1", fails("INSERT INTO codes VALUES ('A 1')").getMessage());
     }
 
     // INSERT
 
     @Test
     void insertRejectsDuplicateKey() {
-        assertEquals("Duplicate primary key: id=2", fails("INSERT users id=2 name=Bobby").getMessage());
+        assertEquals("Duplicate primary key: id=2", fails("INSERT INTO users VALUES (2, 'Bobby')").getMessage());
         assertEquals(List.of(1, 2, 3), ids());
     }
 
     @Test
     void insertRejectsMissingKey() {
-        assertEquals("Primary key 'id' cannot be empty", fails("INSERT users name=Nobody").getMessage());
+        assertEquals("Primary key 'id' cannot be empty", fails("INSERT INTO users (name) VALUES ('Nobody')").getMessage());
         assertEquals(3, users.getRows().size());
     }
 
@@ -121,79 +122,79 @@ class PrimaryKeyTest {
 
     @Test
     void wrongTypeIsReportedBeforeKeyCheck() {
-        assertEquals("Column 'id' expects INTEGER", fails("INSERT users id=abc").getMessage());
+        assertEquals("Column 'id' expects INTEGER", fails("INSERT INTO users (id) VALUES ('abc')").getMessage());
     }
 
     @Test
     void floatKeyTreatsWholeNumberAndFloatAsSameKey() {
-        run("CREATE prices p:FLOAT:PRIMARY");
-        run("INSERT prices p=7");
-        assertThrows(IllegalArgumentException.class, () -> run("INSERT prices p=7.0"));
+        run("CREATE TABLE prices (p FLOAT PRIMARY KEY)");
+        run("INSERT INTO prices VALUES (7)");
+        assertThrows(IllegalArgumentException.class, () -> run("INSERT INTO prices VALUES (7.0)"));
     }
 
     // DELETE
 
     @Test
     void deletedKeyCanBeReused() {
-        run("DELETE users WHERE id=2");
-        run("INSERT users id=2 name=Bobby");
+        run("DELETE FROM users WHERE id = 2");
+        run("INSERT INTO users VALUES (2, 'Bobby')");
         assertEquals("Bobby", users.getRows().get(2).get("name"));
     }
 
     @Test
     void deleteAllFreesEveryKey() {
-        run("DELETE users");
-        run("INSERT users id=1 name=Again");
+        run("DELETE FROM users");
+        run("INSERT INTO users VALUES (1, 'Again')");
         assertEquals(List.of(1), ids());
     }
 
     @Test
     void deleteKeepsOtherKeysTaken() {
-        run("DELETE users WHERE id=2");
-        assertThrows(IllegalArgumentException.class, () -> run("INSERT users id=1"));
+        run("DELETE FROM users WHERE id = 2");
+        assertThrows(IllegalArgumentException.class, () -> run("INSERT INTO users (id) VALUES (1)"));
     }
 
     // UPDATE
 
     @Test
     void updateOfOtherColumnsLeavesKeyAlone() {
-        run("UPDATE users SET name=X");
+        run("UPDATE users SET name = 'X'");
         assertEquals(List.of(1, 2, 3), ids());
     }
 
     @Test
     void updateCanChangeKeyToUnusedValue() {
-        run("UPDATE users SET id=10 WHERE id=2");
+        run("UPDATE users SET id = 10 WHERE id = 2");
         assertEquals(List.of(1, 10, 3), ids());
 
         // The old key is free and the new one is taken
-        run("INSERT users id=2 name=New");
-        assertThrows(IllegalArgumentException.class, () -> run("INSERT users id=10"));
+        run("INSERT INTO users VALUES (2, 'New')");
+        assertThrows(IllegalArgumentException.class, () -> run("INSERT INTO users (id) VALUES (10)"));
     }
 
     @Test
     void updateCanSetKeyToItsOwnValue() {
-        run("UPDATE users SET id=2 name=Bobby WHERE id=2");
+        run("UPDATE users SET id = 2, name = 'Bobby' WHERE id = 2");
         assertEquals("Bobby", users.getRows().get(1).get("name"));
     }
 
     @Test
     void updateRejectsKeyThatBelongsToAnotherRow() {
-        assertEquals("Duplicate primary key: id=1", fails("UPDATE users SET id=1 name=X WHERE id=2").getMessage());
+        assertEquals("Duplicate primary key: id=1", fails("UPDATE users SET id = 1, name = 'X' WHERE id = 2").getMessage());
         assertEquals(List.of(1, 2, 3), ids());
         assertEquals("Bob", users.getRows().get(1).get("name"), "nothing changes when the update fails");
     }
 
     @Test
     void updateRejectsSameKeyOnSeveralRows() {
-        IllegalArgumentException e = fails("UPDATE users SET id=10 WHERE id>=2");
+        IllegalArgumentException e = fails("UPDATE users SET id = 10 WHERE id >= 2");
         assertEquals("Cannot set primary key 'id' to the same value on 2 rows", e.getMessage());
         assertEquals(List.of(1, 2, 3), ids());
     }
 
     @Test
     void updateOfKeyMatchingNoRowsIsAllowed() {
-        run("UPDATE users SET id=1 WHERE id=99");
+        run("UPDATE users SET id = 1 WHERE id = 99");
         assertEquals(List.of(1, 2, 3), ids());
     }
 
@@ -217,15 +218,15 @@ class PrimaryKeyTest {
     @Test
     void primaryKeySurvivesSaveAndLoad() {
         Path file = dir.resolve("users.json");
-        run("SAVE users " + file);
+        run("SAVE users '" + file + "'");
 
         engine = new QueryEngine();
-        run("LOAD " + file);
+        run("LOAD '" + file + "'");
         users = engine.getTable("users");
 
         assertEquals("id", users.getPrimaryKey().getName());
         assertEquals(List.of(1, 2, 3), ids());
-        assertThrows(IllegalArgumentException.class, () -> run("INSERT users id=3"));
+        assertThrows(IllegalArgumentException.class, () -> run("INSERT INTO users (id) VALUES (3)"));
     }
 
     @Test
@@ -236,7 +237,7 @@ class PrimaryKeyTest {
                  "columns": [{"name": "id", "type": "INTEGER", "primaryKey": true}],
                  "rows": [{"id": 1}, {"id": 1}]}
                 """);
-        assertEquals("Duplicate primary key: id=1", fails("LOAD " + file).getMessage());
+        assertEquals("Duplicate primary key: id=1", fails("LOAD '" + file + "'").getMessage());
         assertNull(engine.getTable("dupes"));
     }
 
@@ -248,7 +249,7 @@ class PrimaryKeyTest {
                  "columns": [{"name": "id", "type": "INTEGER", "primaryKey": true}, {"name": "n", "type": "INTEGER"}],
                  "rows": [{"n": 1}]}
                 """);
-        assertThrows(IllegalArgumentException.class, () -> run("LOAD " + file));
+        assertThrows(IllegalArgumentException.class, () -> run("LOAD '" + file + "'"));
     }
 
     @Test

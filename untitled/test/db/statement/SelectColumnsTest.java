@@ -52,64 +52,70 @@ class SelectColumnsTest {
 
     @Test
     void parsesColumnList() {
-        SelectStatement s = assertInstanceOf(SelectStatement.class, Parser.parse("SELECT users name,id"));
+        SelectStatement s = assertInstanceOf(SelectStatement.class, Parser.parse("SELECT name, id FROM users"));
         assertEquals(List.of("name", "id"), s.getColumns());
         assertTrue(s.getConditions().isEmpty());
     }
 
     @Test
     void parsesColumnListWithWhere() {
-        SelectStatement s = assertInstanceOf(SelectStatement.class, Parser.parse("SELECT users name WHERE id>1"));
+        SelectStatement s = assertInstanceOf(SelectStatement.class, Parser.parse("SELECT name FROM users WHERE id > 1"));
         assertEquals(List.of("name"), s.getColumns());
         assertEquals("id>1", s.getConditions().get(0).toString());
     }
 
     @Test
-    void starAndMissingListMeanEveryColumn() {
-        assertTrue(((SelectStatement) Parser.parse("SELECT users *")).getColumns().isEmpty());
-        assertTrue(((SelectStatement) Parser.parse("SELECT users * WHERE id=1")).getColumns().isEmpty());
-        assertTrue(((SelectStatement) Parser.parse("SELECT users")).getColumns().isEmpty());
+    void starMeansEveryColumn() {
+        assertTrue(((SelectStatement) Parser.parse("SELECT * FROM users")).getColumns().isEmpty());
+        assertTrue(((SelectStatement) Parser.parse("SELECT * FROM users WHERE id = 1")).getColumns().isEmpty());
+    }
+
+    @Test
+    void rejectsMissingColumnListOrFrom() {
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("SELECT FROM users"));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("SELECT * users"));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("SELECT *"));
     }
 
     @Test
     void printsOnlyRequestedColumnsInRequestedOrder() {
-        assertEquals("[{name=Alice, id=1}, {name=Bob, id=2}, {id=3}]", run("SELECT users name,id"));
+        assertEquals("[{name=Alice, id=1}, {name=Bob, id=2}, {id=3}]", run("SELECT name, id FROM users"));
     }
 
     @Test
     void combinesColumnsWithWhere() {
-        assertEquals("[{name=Bob}]", run("SELECT users name WHERE active=false"));
+        assertEquals("[{name=Bob}]", run("SELECT name FROM users WHERE active = FALSE"));
     }
 
     @Test
-    void starPrintsSameAsNoColumnList() {
-        String all = run("SELECT users");
+    void starPrintsSameAsListingEveryColumn() {
+        String all = run("SELECT * FROM users");
         output.reset();
-        assertEquals(all, run("SELECT users *"));
+        assertEquals(all, run("SELECT id, name, active FROM users"));
     }
 
     @Test
     void selectingColumnsDoesNotChangeTheTable() {
-        run("SELECT users name");
+        run("SELECT name FROM users");
         assertEquals(Map.of("id", 1, "name", "Alice", "active", true), users.getRows().get(0).getData());
     }
 
     @Test
     void rejectsUnknownColumn() {
-        IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> run("SELECT users name,age"));
+        IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> run("SELECT name, age FROM users"));
         assertEquals("Unknown column 'age'", e.getMessage());
     }
 
     @Test
     void rejectsEmptyColumnNames() {
-        assertThrows(IllegalArgumentException.class, () -> Parser.parse("SELECT users name,"));
-        assertThrows(IllegalArgumentException.class, () -> Parser.parse("SELECT users ,name"));
-        assertThrows(IllegalArgumentException.class, () -> Parser.parse("SELECT users name,,id"));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("SELECT name, FROM users"));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("SELECT , name FROM users"));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("SELECT name,, id FROM users"));
     }
 
     @Test
-    void rejectsTokensAfterColumnListOtherThanWhere() {
-        assertThrows(IllegalArgumentException.class, () -> Parser.parse("SELECT users name id"));
+    void rejectsColumnsWithoutCommas() {
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("SELECT name id FROM users"));
     }
 
     @Test

@@ -72,6 +72,44 @@ class StatementTest {
     }
 
     @Test
+    void insertWithoutColumnListUsesTableOrder() {
+        new InsertStatement("users", List.of(), List.of(3, "Carol")).execute(engine);
+        assertEquals(Map.of("id", 3, "name", "Carol"), users.getRows().get(2).getData());
+    }
+
+    @Test
+    void insertWithColumnListMayReorderAndSkipColumns() {
+        new InsertStatement("users", List.of("name", "id"), List.of("Carol", 3)).execute(engine);
+        new InsertStatement("users", List.of("id"), List.of(4)).execute(engine);
+        assertEquals(Map.of("id", 3, "name", "Carol"), users.getRows().get(2).getData());
+        assertNull(users.getRows().get(3).get("name"));
+    }
+
+    @Test
+    void insertRejectsWrongNumberOfValues() {
+        IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
+                () -> new InsertStatement("users", List.of(), List.of(3)).execute(engine));
+        assertEquals("Expected 2 values, got 1", e.getMessage());
+        e = assertThrows(IllegalArgumentException.class,
+                () -> new InsertStatement("users", List.of("id"), List.of(3, "Carol")).execute(engine));
+        assertEquals("Expected 1 value, got 2", e.getMessage());
+        assertEquals(2, users.getRows().size());
+    }
+
+    @Test
+    void insertRejectsUnknownColumn() {
+        IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("INSERT INTO users (id, age) VALUES (3, 30)").execute(engine));
+        assertEquals("Unknown column 'age'", e.getMessage());
+    }
+
+    @Test
+    void insertNullLeavesCellEmpty() {
+        Parser.parse("INSERT INTO users VALUES (3, NULL)").execute(engine);
+        assertNull(users.getRows().get(2).get("name"));
+    }
+
+    @Test
     void selectStatementPrintsAllRows() {
         new SelectStatement("users").execute(engine);
         assertPrinted("[{id=1, name=Alice}, {id=2, name=Bob}]");
@@ -91,8 +129,8 @@ class StatementTest {
 
     @Test
     void parsedStatementsRunEndToEnd() {
-        Parser.parse("INSERT users id=3 name=Carol").execute(engine);
-        Parser.parse("SELECT users WHERE id=3").execute(engine);
+        Parser.parse("INSERT INTO users (id, name) VALUES (3, 'Carol')").execute(engine);
+        Parser.parse("SELECT * FROM users WHERE id = 3").execute(engine);
         assertPrinted("[{id=3, name=Carol}]");
     }
 

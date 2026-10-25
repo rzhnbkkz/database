@@ -2,7 +2,6 @@ package db.parser;
 
 import db.model.Column;
 import db.model.DataType;
-import db.model.Row;
 import db.query.Condition;
 import db.statement.CreateStatement;
 import db.statement.DeleteStatement;
@@ -15,225 +14,268 @@ import db.statement.UpdateStatement;
 
 import java.util.*;
 
+// Recursive descent parser: one method per grammar rule, each consuming the tokens it recognises.
+//
+//   statement := (select | insert | update | delete | create | save | load) [';']
+//   select    := SELECT ('*' | name {',' name}) FROM name [where]
+//   insert    := INSERT INTO name ['(' name {',' name} ')'] VALUES '(' literal {',' literal} ')'
+//   update    := UPDATE name SET name '=' literal {',' name '=' literal} [where]
+//   delete    := DELETE FROM name [where]
+//   create    := CREATE TABLE name '(' columnDef {',' columnDef} ')'
+//   columnDef := name type ['(' NUMBER ')'] [PRIMARY KEY]
+//   save      := SAVE name STRING
+//   load      := LOAD STRING
+//   where     := WHERE name op literal {AND name op literal}
+//   literal   := STRING | ['-'] NUMBER | TRUE | FALSE | NULL
 public class Parser {
-    String command;
+    private final List<Token> tokens;
+    private int index = 0;
+
+    private Parser(List<Token> tokens) {
+        this.tokens = tokens;
+    }
 
     public static Statement parse(String input) {
-        String[] tokens = tokenize(input);
-        if(tokens.length < 2) throw new IllegalArgumentException("Command is not recognized, try again");
-        switch (tokens[0].toUpperCase()) {
-            case "SELECT":
-                return parseSelect(tokens);
-            case "INSERT":
-                return parseInsert(tokens);
-            case "DELETE":
-                return parseDelete(tokens);
-            case "UPDATE":
-                return parseUpdate(tokens);
-            case "CREATE":
-                return parseCreate(tokens);
-            case "SAVE":
-                return parseSave(tokens);
-            case "LOAD":
-                return parseLoad(tokens);
-            default:
-                throw new IllegalArgumentException("Command " + tokens[0] + " is unrecognized");
-        }
+        return new Parser(Lexer.tokenize(input)).parseStatement();
     }
 
-    // Splits on whitespace, except inside double quotes; quotes are kept so values can be recognised as text
-    private static String[] tokenize(String input) {
-        List<String> tokens = new ArrayList<>();
-        StringBuilder current = new StringBuilder();
-        boolean inQuotes = false;
-        for (int i = 0; i < input.length(); i++) {
-            char c = input.charAt(i);
-            if (inQuotes) {
-                current.append(c);
-                if (c == '\\' && i + 1 < input.length()) current.append(input.charAt(++i));
-                else if (c == '"') inQuotes = false;
-            } else if (Character.isWhitespace(c)) {
-                if (!current.isEmpty()) {
-                    tokens.add(current.toString());
-                    current.setLength(0);
-                }
-            } else {
-                if (c == '"') inQuotes = true;
-                current.append(c);
-            }
-        }
-        if (inQuotes) throw new IllegalArgumentException("Missing closing quote");
-        if (!current.isEmpty()) tokens.add(current.toString());
-        return tokens.toArray(new String[0]);
+    private Statement parseStatement() {
+        Token first = peek();
+        if (first.type() == TokenType.END) throw new IllegalArgumentException("Command is not recognized, try again");
+        Statement statement = switch (first.text().toUpperCase()) {
+            case "SELECT" -> parseSelect();
+            case "INSERT" -> parseInsert();
+            case "UPDATE" -> parseUpdate();
+            case "DELETE" -> parseDelete();
+            case "CREATE" -> parseCreate();
+            case "SAVE" -> parseSave();
+            case "LOAD" -> parseLoad();
+            default -> throw new IllegalArgumentException("Command " + first.text() + " is unrecognized");
+        };
+        acceptSymbol(";");
+        if (peek().type() != TokenType.END) throw new IllegalArgumentException("Unexpected " + peek().describe());
+        return statement;
     }
 
-    // "text" -> text, with \" and \\ unescaped; anything without a leading quote is returned unchanged
-    private static String unquote(String token) {
-        if (!token.startsWith("\"")) return token;
-        StringBuilder sb = new StringBuilder();
-        for (int i = 1; i < token.length(); i++) {
-            char c = token.charAt(i);
-            if (c == '"') {
-                if (i != token.length() - 1) throw new IllegalArgumentException("Unexpected text after closing quote: " + token);
-                return sb.toString();
-            }
-            if (c == '\\' && i + 1 < token.length() && (token.charAt(i + 1) == '"' || token.charAt(i + 1) == '\\')) {
-                c = token.charAt(++i);
-            }
-            sb.append(c);
-        }
-        throw new IllegalArgumentException("Missing closing quote: " + token);
-    }
-
-    private static Statement parseSelect(String[] command) {
-        // SELECT <table> [<column>,<column>... | *] [WHERE ...]
-        if (command.length < 3 || command[2].equalsIgnoreCase("WHERE")) {
-            return new SelectStatement(command[1], parseWhere(command, 2));
-        }
-        return new SelectStatement(command[1], parseColumnList(command[2]), parseWhere(command, 3));
-    }
-
-    private static List<String> parseColumnList(String token) {
-        if (token.equals("*")) return List.of();
+    private Statement parseSelect() {
+        expectKeyword("SELECT");
         List<String> columns = new ArrayList<>();
-        for (String column : token.split(",", -1)) {
-            if (column.isEmpty()) throw new IllegalArgumentException("Expected column names separated by commas, got: " + token);
-            columns.add(column);
-        }
-        return columns;
+        if (!acceptSymbol("*")) columns = parseNameList("column name");
+        expectKeyword("FROM");
+        String table = expectName("table name");
+        return new SelectStatement(table, columns, parseWhere());
     }
 
-    // DELETE <table> [WHERE <condition>]
-    private static Statement parseDelete(String[] command) {
-        return new DeleteStatement(command[1], parseWhere(command, 2));
-    }
-
-    // UPDATE <table> SET <column>=<value> ... [WHERE <condition>]
-    private static Statement parseUpdate(String[] command) {
-        if (command.length < 3 || !command[2].equalsIgnoreCase("SET")) {
-            throw new IllegalArgumentException("Expected: UPDATE <table> SET <column>=<value> ... [WHERE <condition>]");
-        }
-        Map<String, Object> values = new LinkedHashMap<>();
-        int i = 3;
-        for (; i < command.length && !command[i].equalsIgnoreCase("WHERE"); i++) {
-            Map.Entry<String, Object> assignment = parseAssignment(command[i]);
-            values.put(assignment.getKey(), assignment.getValue());
-        }
-        if (values.isEmpty()) throw new IllegalArgumentException("Expected at least one column=value after SET");
-        return new UpdateStatement(command[1], values, parseWhere(command, i));
-    }
-
-    // Parses an optional "WHERE <condition> [AND <condition>] ..." starting at index; empty when absent
-    private static List<Condition> parseWhere(String[] command, int index) {
-        List<Condition> conditions = new ArrayList<>();
-        if (index >= command.length) return conditions;
-        if (!command[index].equalsIgnoreCase("WHERE")) {
-            throw new IllegalArgumentException("Unexpected " + command[index] + ", expected WHERE");
-        }
-        String keyword = "WHERE";
-        for (int i = index + 1; ; i += 2) {
-            if (i >= command.length) throw new IllegalArgumentException("Expected a condition after " + keyword);
-            conditions.add(parseCondition(command[i]));
-            if (i + 1 >= command.length) return conditions;
-            keyword = command[i + 1];
-            if (!keyword.equalsIgnoreCase("AND")) {
-                throw new IllegalArgumentException("Unexpected " + keyword + " after condition, expected AND");
+    private Statement parseInsert() {
+        expectKeyword("INSERT");
+        expectKeyword("INTO");
+        String table = expectName("table name");
+        List<String> columns = List.of();
+        if (acceptSymbol("(")) {
+            columns = parseNameList("column name");
+            expectSymbol(")");
+            Set<String> seen = new HashSet<>();
+            for (String column : columns) {
+                if (!seen.add(column)) throw new IllegalArgumentException("Column '" + column + "' is listed twice");
             }
         }
+        expectKeyword("VALUES");
+        expectSymbol("(");
+        List<Object> values = new ArrayList<>();
+        do {
+            values.add(parseLiteral());
+        } while (acceptSymbol(","));
+        expectSymbol(")");
+        return new InsertStatement(table, columns, values);
     }
 
-    // <column><op><value> where op is one of = != > < >= <=
-    private static Condition parseCondition(String token) {
-        int i = 0;
-        while (i < token.length() && "=!<>".indexOf(token.charAt(i)) < 0) i++;
-        if (i == 0 || i == token.length()) {
-            throw new IllegalArgumentException("Expected a condition like column=value, got: " + token);
-        }
-        int end = i + 1;
-        if (end < token.length() && token.charAt(end) == '=' && token.charAt(i) != '=') end++;
-        String symbol = token.substring(i, end);
-        if (symbol.equals("!")) throw new IllegalArgumentException("Expected != in condition, got: " + token);
-        return new Condition(token.substring(0, i), Condition.Operator.fromSymbol(symbol), parseValue(token.substring(end)));
+    private Statement parseUpdate() {
+        expectKeyword("UPDATE");
+        String table = expectName("table name");
+        expectKeyword("SET");
+        Map<String, Object> values = new LinkedHashMap<>();
+        do {
+            String column = expectName("column name");
+            expectSymbol("=");
+            if (values.containsKey(column)) throw new IllegalArgumentException("Column '" + column + "' is set twice");
+            values.put(column, parseLiteral());
+        } while (acceptSymbol(","));
+        return new UpdateStatement(table, values, parseWhere());
     }
 
-    private static Statement parseInsert(String[] command) {
-        String tableName = command[1];
-        Map<String, Object> map = new HashMap<>();
-        for (int i = 2; i < command.length; i++) {
-            Map.Entry<String, Object> assignment = parseAssignment(command[i]);
-            map.put(assignment.getKey(), assignment.getValue());
-        }
-        Row row = new Row(map);
-        return new InsertStatement(tableName, row);
+    private Statement parseDelete() {
+        expectKeyword("DELETE");
+        expectKeyword("FROM");
+        String table = expectName("table name");
+        return new DeleteStatement(table, parseWhere());
     }
 
-    private static Statement parseCreate(String[] command) {
-        String tableName = command[1];
-        if (command.length < 3) throw new IllegalArgumentException("Expected at least one column, e.g. id:INTEGER");
-        // CREATE <table> <column>:<type>[:PRIMARY] ...
+    private Statement parseCreate() {
+        expectKeyword("CREATE");
+        expectKeyword("TABLE");
+        String table = expectName("table name");
+        expectSymbol("(");
         List<Column> columns = new ArrayList<>();
         Set<String> names = new HashSet<>();
-        for (int i = 2; i < command.length; i++) {
-            String[] parts = command[i].split(":", 3);
-            if (parts.length < 2 || parts[0].isEmpty()) {
-                throw new IllegalArgumentException("Expected column:TYPE or column:TYPE:PRIMARY, got: " + command[i]);
+        do {
+            String name = expectName("column name");
+            if (!names.add(name)) throw new IllegalArgumentException("Duplicate column: " + name);
+            DataType type = parseDataType();
+            boolean primaryKey = false;
+            if (acceptKeyword("PRIMARY")) {
+                expectKeyword("KEY");
+                primaryKey = true;
             }
-            boolean primaryKey = parts.length == 3;
-            if (primaryKey && !parts[2].equalsIgnoreCase("PRIMARY")) {
-                throw new IllegalArgumentException("Expected PRIMARY after the type, got: " + parts[2]);
+            columns.add(new Column(name, type, primaryKey));
+        } while (acceptSymbol(","));
+        expectSymbol(")");
+        return new CreateStatement(table, columns);
+    }
+
+    // INTEGER (or INT), VARCHAR with an optional length like VARCHAR(50), BOOLEAN (or BOOL), FLOAT
+    private DataType parseDataType() {
+        Token token = peek();
+        if (token.type() != TokenType.IDENTIFIER) throw expected("a column type");
+        index++;
+        DataType type = switch (token.text().toUpperCase()) {
+            case "INTEGER", "INT" -> DataType.INTEGER;
+            case "VARCHAR" -> DataType.VARCHAR;
+            case "BOOLEAN", "BOOL" -> DataType.BOOLEAN;
+            case "FLOAT" -> DataType.FLOAT;
+            default -> throw new IllegalArgumentException("Unknown type " + token.text() + ", expected one of "
+                    + Arrays.toString(DataType.values()));
+        };
+        // The length is accepted for MySQL compatibility but not enforced
+        if (type == DataType.VARCHAR && acceptSymbol("(")) {
+            if (peek().type() != TokenType.NUMBER || peek().text().contains(".")) throw expected("a length");
+            index++;
+            expectSymbol(")");
+        }
+        return type;
+    }
+
+    private Statement parseSave() {
+        index++;
+        String table = expectName("table name");
+        return new SaveStatement(table, expectString("a file path in quotes"));
+    }
+
+    private Statement parseLoad() {
+        index++;
+        return new LoadStatement(expectString("a file path in quotes"));
+    }
+
+    // Empty when there is no WHERE
+    private List<Condition> parseWhere() {
+        List<Condition> conditions = new ArrayList<>();
+        if (!acceptKeyword("WHERE")) return conditions;
+        do {
+            conditions.add(parseCondition());
+            if (peek().isKeyword("OR")) throw new IllegalArgumentException("OR is not supported yet, only AND");
+        } while (acceptKeyword("AND"));
+        return conditions;
+    }
+
+    private Condition parseCondition() {
+        String column = expectName("column name");
+        Token token = peek();
+        Condition.Operator operator;
+        if (token.type() != TokenType.SYMBOL) throw expected("a comparison (= != <> < > <= >=)");
+        if (token.text().equals("<>")) operator = Condition.Operator.NOT_EQUALS;
+        else {
+            try {
+                operator = Condition.Operator.fromSymbol(token.text());
+            } catch (IllegalArgumentException e) {
+                throw expected("a comparison (= != <> < > <= >=)");
             }
-            if (!names.add(parts[0])) throw new IllegalArgumentException("Duplicate column: " + parts[0]);
-            columns.add(new Column(parts[0], parseDataType(parts[1]), primaryKey));
         }
-        return new CreateStatement(tableName, columns);
+        index++;
+        return new Condition(column, operator, parseLiteral());
     }
 
-    private static DataType parseDataType(String type) {
-        try {
-            return DataType.valueOf(type.toUpperCase());
-        } catch (IllegalArgumentException e) {
-            throw new IllegalArgumentException("Unknown type " + type + ", expected one of " + Arrays.toString(DataType.values()));
+    private Object parseLiteral() {
+        Token token = peek();
+        if (token.type() == TokenType.STRING) {
+            index++;
+            return token.text();
         }
+        if (acceptKeyword("TRUE")) return true;
+        if (acceptKeyword("FALSE")) return false;
+        if (acceptKeyword("NULL")) return null;
+        boolean negative = acceptSymbol("-");
+        token = peek();
+        if (token.type() != TokenType.NUMBER) {
+            if (token.type() == TokenType.IDENTIFIER && !negative) {
+                throw new IllegalArgumentException("Expected a value, got " + token.describe()
+                        + " (put text in quotes: '" + token.text() + "')");
+            }
+            throw expected("a value");
+        }
+        index++;
+        String number = (negative ? "-" : "") + token.text();
+        if (!number.contains(".")) {
+            try {
+                return Integer.parseInt(number);
+            } catch (NumberFormatException e) {
+                // Too big for INTEGER, falls through to FLOAT
+            }
+        }
+        return Float.parseFloat(number);
     }
 
-    // SAVE <table> <path>
-    private static Statement parseSave(String[] command) {
-        if (command.length != 3) throw new IllegalArgumentException("Expected: SAVE <table> <path>");
-        return new SaveStatement(command[1], unquote(command[2]));
+    private List<String> parseNameList(String what) {
+        List<String> names = new ArrayList<>();
+        do {
+            names.add(expectName(what));
+        } while (acceptSymbol(","));
+        return names;
     }
 
-    // LOAD <path>
-    private static Statement parseLoad(String[] command) {
-        if (command.length != 2) throw new IllegalArgumentException("Expected: LOAD <path>");
-        return new LoadStatement(unquote(command[1]));
+    private Token peek() {
+        return tokens.get(index);
     }
 
-    private static Map.Entry<String, Object> parseAssignment(String token) {
-        String[] pair = token.split("=", 2);
-
-        if (pair.length != 2) {
-            throw new IllegalArgumentException("Expected key=value, got: " + token);
-        }
-
-        return Map.entry(pair[0], parseValue(pair[1]));
+    private boolean acceptKeyword(String keyword) {
+        if (!peek().isKeyword(keyword)) return false;
+        index++;
+        return true;
     }
 
-    private static Object parseValue(String value) {
-        if (value.startsWith("\"")) return unquote(value);
+    private boolean acceptSymbol(String symbol) {
+        if (!peek().isSymbol(symbol)) return false;
+        index++;
+        return true;
+    }
 
-        try {
-            return Integer.parseInt(value);
+    private void expectKeyword(String keyword) {
+        if (!acceptKeyword(keyword)) throw expected(keyword);
+    }
+
+    private void expectSymbol(String symbol) {
+        if (!acceptSymbol(symbol)) throw expected("'" + symbol + "'");
+    }
+
+    private String expectName(String what) {
+        Token token = peek();
+        if (token.type() != TokenType.IDENTIFIER) {
+            if (token.type() == TokenType.KEYWORD) {
+                throw new IllegalArgumentException("Expected " + what + ", got keyword " + token.describe()
+                        + " (use `" + token.text().toLowerCase() + "` to use it as a name)");
+            }
+            throw expected(what);
         }
-        catch (NumberFormatException e) {}
+        index++;
+        return token.text();
+    }
 
-        try {
-            return Float.parseFloat(value);
-        }
-        catch(NumberFormatException e) {}
+    private String expectString(String what) {
+        Token token = peek();
+        if (token.type() != TokenType.STRING) throw expected(what);
+        index++;
+        return token.text();
+    }
 
-        if(value.equalsIgnoreCase("true")) return true;
-        if(value.equalsIgnoreCase("false")) return false;
-
-        return value;
+    private IllegalArgumentException expected(String what) {
+        return new IllegalArgumentException("Expected " + what + ", got " + peek().describe());
     }
 }

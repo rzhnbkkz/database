@@ -45,7 +45,7 @@ class WhereConditionTest {
     }
 
     private List<Object> idsWhere(String where) {
-        SelectStatement s = (SelectStatement) Parser.parse("SELECT users WHERE " + where);
+        SelectStatement s = (SelectStatement) Parser.parse("SELECT * FROM users WHERE " + where);
         return QueryEngine.selectWhere(users, s.getConditions()).stream().map(r -> r.get("id")).toList();
     }
 
@@ -54,10 +54,11 @@ class WhereConditionTest {
     @Test
     void parsesEveryOperator() {
         String[][] cases = {
-                {"id=1", "="}, {"id!=1", "!="}, {"id>1", ">"}, {"id<1", "<"}, {"id>=1", ">="}, {"id<=1", "<="},
+                {"id = 1", "="}, {"id != 1", "!="}, {"id <> 1", "!="}, {"id>1", ">"}, {"id < 1", "<"}, {"id >= 1", ">="},
+                {"id<=1", "<="},
         };
         for (String[] c : cases) {
-            SelectStatement s = (SelectStatement) Parser.parse("SELECT users WHERE " + c[0]);
+            SelectStatement s = (SelectStatement) Parser.parse("SELECT * FROM users WHERE " + c[0]);
             Condition condition = s.getConditions().get(0);
             assertEquals("id", condition.getColumn(), c[0]);
             assertEquals(c[1], condition.getOperator().getSymbol(), c[0]);
@@ -67,14 +68,14 @@ class WhereConditionTest {
 
     @Test
     void parsesNegativeNumberAfterOperator() {
-        SelectStatement s = (SelectStatement) Parser.parse("SELECT users WHERE id>-5");
+        SelectStatement s = (SelectStatement) Parser.parse("SELECT * FROM users WHERE id > -5");
         assertEquals(Condition.Operator.GREATER, s.getConditions().get(0).getOperator());
         assertEquals(-5, s.getConditions().get(0).getValue());
     }
 
     @Test
     void parsesConditionsJoinedWithAnd() {
-        SelectStatement s = (SelectStatement) Parser.parse("SELECT users WHERE id>1 and active=true AND name!=Bob");
+        SelectStatement s = (SelectStatement) Parser.parse("SELECT * FROM users WHERE id > 1 and active = true AND name != 'Bob'");
         assertEquals(List.of("id>1", "active=true", "name!=Bob"),
                 s.getConditions().stream().map(Condition::toString).toList());
     }
@@ -82,26 +83,41 @@ class WhereConditionTest {
     @Test
     void rejectsMalformedConditions() {
         String[] bad = {
-                "WHERE id", "WHERE =1", "WHERE id!1", "WHERE id=1 AND", "WHERE id=1 OR id=2", "WHERE id=1 id=2",
+                "WHERE id", "WHERE = 1", "WHERE id ! 1", "WHERE id = 1 AND", "WHERE id = 1 OR id = 2",
+                "WHERE id = 1 id = 2", "WHERE id = Bob", "WHERE id = = 1", "WHERE",
         };
         for (String where : bad) {
-            assertThrows(IllegalArgumentException.class, () -> Parser.parse("SELECT users " + where), where);
+            assertThrows(IllegalArgumentException.class, () -> Parser.parse("SELECT * FROM users " + where), where);
         }
     }
 
     @Test
     void andErrorNamesTheKeyword() {
         IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
-                () -> Parser.parse("SELECT users WHERE id=1 AND"));
-        assertEquals("Expected a condition after AND", e.getMessage());
+                () -> Parser.parse("SELECT * FROM users WHERE id = 1 AND"));
+        assertEquals("Expected column name, got end of input", e.getMessage());
+    }
+
+    @Test
+    void orErrorSaysItIsNotSupported() {
+        IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("SELECT * FROM users WHERE id = 1 OR id = 2"));
+        assertEquals("OR is not supported yet, only AND", e.getMessage());
+    }
+
+    @Test
+    void unquotedTextErrorSuggestsQuotes() {
+        IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("SELECT * FROM users WHERE name = Bob"));
+        assertEquals("Expected a value, got 'Bob' at position 34 (put text in quotes: 'Bob')", e.getMessage());
     }
 
     // Matching
 
     @Test
     void equalsAndNotEquals() {
-        assertEquals(List.of(2), idsWhere("name=Bob"));
-        assertEquals(List.of(1, 3), idsWhere("name!=Bob"));
+        assertEquals(List.of(2), idsWhere("name = 'Bob'"));
+        assertEquals(List.of(1, 3), idsWhere("name != 'Bob'"));
     }
 
     @Test
@@ -126,8 +142,8 @@ class WhereConditionTest {
 
     @Test
     void stringComparisonsAreAlphabetical() {
-        assertEquals(List.of(2, 3), idsWhere("name>Alice"));
-        assertEquals(List.of(1, 2), idsWhere("name<Carol"));
+        assertEquals(List.of(2, 3), idsWhere("name > 'Alice'"));
+        assertEquals(List.of(1, 2), idsWhere("name < 'Carol'"));
     }
 
     @Test
@@ -139,20 +155,20 @@ class WhereConditionTest {
     @Test
     void emptyCellsNeverMatch() {
         // Row 4 has only an id, so it's left out of every name/score condition, even !=
-        assertEquals(List.of(1, 3), idsWhere("name!=Bob"));
+        assertEquals(List.of(1, 3), idsWhere("name != 'Bob'"));
         assertFalse(idsWhere("score<100").contains(4));
     }
 
     @Test
     void mismatchedTypesNeverMatchExceptNotEquals() {
-        assertEquals(List.of(), idsWhere("name=5"));
-        assertEquals(List.of(), idsWhere("name>5"));
-        assertEquals(List.of(1, 2, 3), idsWhere("name!=5"));
+        assertEquals(List.of(), idsWhere("name = 5"));
+        assertEquals(List.of(), idsWhere("name > 5"));
+        assertEquals(List.of(1, 2, 3), idsWhere("name != 5"));
     }
 
     @Test
     void andRequiresEveryCondition() {
-        assertEquals(List.of(3), idsWhere("active=true AND id>1"));
+        assertEquals(List.of(3), idsWhere("active = TRUE AND id > 1"));
         assertEquals(List.of(2, 3), idsWhere("id>=2 AND id<=3"));
         assertEquals(List.of(), idsWhere("active=true AND active=false"));
     }
@@ -166,13 +182,13 @@ class WhereConditionTest {
 
     @Test
     void deleteWithOperatorsAndAnd() {
-        Parser.parse("DELETE users WHERE id>1 AND active=true").execute(engine);
+        Parser.parse("DELETE FROM users WHERE id > 1 AND active = true").execute(engine);
         assertEquals(List.of(1, 2, 4), users.getRows().stream().map(r -> r.get("id")).toList());
     }
 
     @Test
     void updateWithOperators() {
-        Parser.parse("UPDATE users SET active=false WHERE score>=7").execute(engine);
+        Parser.parse("UPDATE users SET active = false WHERE score >= 7").execute(engine);
         assertEquals(List.of(1, 2), idsWhere("active=false"));
         assertEquals(List.of(3), idsWhere("active=true"));
     }

@@ -5,20 +5,29 @@ import db.statement.SelectStatement;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.Arrays;
+import java.util.List;
+
 import static org.junit.jupiter.api.Assertions.*;
 
 class ParserTest {
 
+    private List<Object> insertedValues(String values) {
+        return ((InsertStatement) Parser.parse("INSERT INTO t VALUES (" + values + ")")).getValues();
+    }
+
     @Test
     void parsesSelectWithoutCondition() {
-        SelectStatement s = assertInstanceOf(SelectStatement.class, Parser.parse("SELECT users"));
+        SelectStatement s = assertInstanceOf(SelectStatement.class, Parser.parse("SELECT * FROM users"));
         assertEquals("users", s.getTableName());
+        assertTrue(s.getColumns().isEmpty());
         assertTrue(s.getConditions().isEmpty());
     }
 
     @Test
     void parsesSelectWithWhereCondition() {
-        SelectStatement s = assertInstanceOf(SelectStatement.class, Parser.parse("SELECT users WHERE name=Alice"));
+        SelectStatement s = assertInstanceOf(SelectStatement.class,
+                Parser.parse("SELECT * FROM users WHERE name = 'Alice'"));
         assertEquals("users", s.getTableName());
         assertEquals("name", s.getConditions().get(0).getColumn());
         assertEquals("Alice", s.getConditions().get(0).getValue());
@@ -26,92 +35,153 @@ class ParserTest {
 
     @Test
     void keywordsAreCaseInsensitive() {
-        SelectStatement s = assertInstanceOf(SelectStatement.class, Parser.parse("select users where id=1"));
+        SelectStatement s = assertInstanceOf(SelectStatement.class, Parser.parse("select * from users where id = 1"));
         assertEquals(1, s.getConditions().get(0).getValue());
-        assertInstanceOf(InsertStatement.class, Parser.parse("insert users id=1"));
+        assertInstanceOf(InsertStatement.class, Parser.parse("Insert Into users Values (1)"));
     }
 
     @Test
-    void ignoresSurroundingAndRepeatedWhitespace() {
-        SelectStatement s = assertInstanceOf(SelectStatement.class, Parser.parse("   SELECT    users   "));
-        assertEquals("users", s.getTableName());
+    void namesKeepTheirCase() {
+        SelectStatement s = (SelectStatement) Parser.parse("SELECT userName FROM Users");
+        assertEquals("Users", s.getTableName());
+        assertEquals(List.of("userName"), s.getColumns());
     }
 
     @Test
-    void parsesInsertWithAssignments() {
+    void whitespaceIsOptionalAroundSymbols() {
+        SelectStatement s = (SelectStatement) Parser.parse("   SELECT id,name FROM users WHERE id>=1   ");
+        assertEquals(List.of("id", "name"), s.getColumns());
+        assertEquals("id>=1", s.getConditions().get(0).toString());
+    }
+
+    @Test
+    void acceptsOneTrailingSemicolon() {
+        assertInstanceOf(SelectStatement.class, Parser.parse("SELECT * FROM users;"));
+        assertInstanceOf(SelectStatement.class, Parser.parse("SELECT * FROM users ;  "));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("SELECT * FROM users;;"));
+    }
+
+    @Test
+    void parsesInsertWithColumnList() {
         InsertStatement s = assertInstanceOf(InsertStatement.class,
-                Parser.parse("INSERT users id=4 name=Dave active=true"));
+                Parser.parse("INSERT INTO users (id, name, active) VALUES (4, 'Dave', TRUE)"));
         assertEquals("users", s.getTableName());
-        assertEquals(4, s.getRow().get("id"));
-        assertEquals("Dave", s.getRow().get("name"));
-        assertEquals(true, s.getRow().get("active"));
+        assertEquals(List.of("id", "name", "active"), s.getColumns());
+        assertEquals(List.of(4, "Dave", true), s.getValues());
     }
 
     @Test
-    void parsesInsertWithoutValues() {
-        InsertStatement s = assertInstanceOf(InsertStatement.class, Parser.parse("INSERT users"));
-        assertTrue(s.getRow().getData().isEmpty());
+    void parsesInsertWithoutColumnList() {
+        InsertStatement s = assertInstanceOf(InsertStatement.class, Parser.parse("INSERT INTO users VALUES (1, 'A')"));
+        assertTrue(s.getColumns().isEmpty());
+        assertEquals(List.of(1, "A"), s.getValues());
     }
 
     @Test
-    void valueAfterFirstEqualsSignIsKeptWhole() {
-        InsertStatement s = assertInstanceOf(InsertStatement.class, Parser.parse("INSERT users expr=a=b"));
-        assertEquals("a=b", s.getRow().get("expr"));
+    void rejectsMalformedInsert() {
+        String[] bad = {
+                "INSERT users VALUES (1)", "INSERT INTO users (1)", "INSERT INTO users VALUES ()",
+                "INSERT INTO users VALUES 1", "INSERT INTO users VALUES (1", "INSERT INTO users VALUES (1,)",
+                "INSERT INTO users () VALUES (1)", "INSERT INTO users (id VALUES (1)",
+                "INSERT INTO users id=1",
+        };
+        for (String command : bad) {
+            assertThrows(IllegalArgumentException.class, () -> Parser.parse(command), command);
+        }
+    }
+
+    @Test
+    void rejectsColumnListedTwiceInInsert() {
+        IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("INSERT INTO users (id, id) VALUES (1, 2)"));
+        assertEquals("Column 'id' is listed twice", e.getMessage());
     }
 
     @Test
     void parsesValueTypes() {
-        InsertStatement s = assertInstanceOf(InsertStatement.class,
-                Parser.parse("INSERT t i=42 neg=-7 f=1.5 b1=TRUE b2=false s=hello"));
-        assertEquals(42, s.getRow().get("i"));
-        assertEquals(-7, s.getRow().get("neg"));
-        assertEquals(1.5f, s.getRow().get("f"));
-        assertEquals(true, s.getRow().get("b1"));
-        assertEquals(false, s.getRow().get("b2"));
-        assertEquals("hello", s.getRow().get("s"));
+        assertEquals(Arrays.asList(42, -7, 1.5f, -0.25f, .5f, true, false, null, "hello"),
+                insertedValues("42, -7, 1.5, -0.25, .5, TRUE, false, NULL, 'hello'"));
     }
 
     @Test
     void numberTooBigForIntegerBecomesFloat() {
-        InsertStatement s = assertInstanceOf(InsertStatement.class, Parser.parse("INSERT t n=3000000000"));
-        assertInstanceOf(Float.class, s.getRow().get("n"));
+        assertInstanceOf(Float.class, insertedValues("3000000000").get(0));
     }
 
     @Test
-    void rejectsSingleWordCommand() {
+    void numberWithDecimalPointIsAlwaysFloat() {
+        assertEquals(List.of(2.0f), insertedValues("2.0"));
+    }
+
+    @Test
+    void rejectsUnquotedTextAsValue() {
+        IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> insertedValues("hello"));
+        assertEquals("Expected a value, got 'hello' at position 23 (put text in quotes: 'hello')", e.getMessage());
+    }
+
+    @Test
+    void keywordNeedsBackticksToBeAName() {
+        IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("SELECT from FROM users"));
+        assertEquals("Expected column name, got keyword 'FROM' at position 8 (use `from` to use it as a name)",
+                e.getMessage());
+
+        SelectStatement s = (SelectStatement) Parser.parse("SELECT `from`, `two words` FROM `select`");
+        assertEquals(List.of("from", "two words"), s.getColumns());
+        assertEquals("select", s.getTableName());
+    }
+
+    @Test
+    void saveAndLoadAreNotReservedAsNames() {
+        SelectStatement s = (SelectStatement) Parser.parse("SELECT save, load FROM users");
+        assertEquals(List.of("save", "load"), s.getColumns());
+    }
+
+    @Test
+    void errorsNameWhatWasExpectedAndWhere() {
+        IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("SELECT * users"));
+        assertEquals("Expected FROM, got 'users' at position 10", e.getMessage());
+
+        e = assertThrows(IllegalArgumentException.class, () -> Parser.parse("SELECT * FROM"));
+        assertEquals("Expected table name, got end of input", e.getMessage());
+
+        e = assertThrows(IllegalArgumentException.class, () -> Parser.parse("SELECT * FROM users extra"));
+        assertEquals("Unexpected 'extra' at position 21", e.getMessage());
+    }
+
+    @Test
+    void rejectsUnknownCharacters() {
+        IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("SELECT * FROM users WHERE id = 1 # comment"));
+        assertEquals("Unexpected character '#' at position 34", e.getMessage());
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("SELECT * FROM users WHERE id ! 1"));
+    }
+
+    @Test
+    void rejectsCommandWithoutArguments() {
         IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> Parser.parse("SELECT"));
-        assertEquals("Command is not recognized, try again", e.getMessage());
+        assertEquals("Expected column name, got end of input", e.getMessage());
     }
 
     @Test
     void rejectsEmptyInput() {
-        assertThrows(IllegalArgumentException.class, () -> Parser.parse(""));
+        IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> Parser.parse(""));
+        assertEquals("Command is not recognized, try again", e.getMessage());
         assertThrows(IllegalArgumentException.class, () -> Parser.parse("   "));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse(";"));
     }
 
     @Test
     void rejectsUnknownCommand() {
         IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> Parser.parse("DROP users"));
         assertEquals("Command DROP is unrecognized", e.getMessage());
-    }
-
-    @Test
-    void rejectsAssignmentWithoutEqualsSign() {
-        IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
-                () -> Parser.parse("INSERT users name"));
-        assertEquals("Expected key=value, got: name", e.getMessage());
-    }
-
-    @Test
-    void rejectsUnexpectedTokensInSelect() {
-        IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
-                () -> Parser.parse("SELECT users WHERE id=1 name=Bob"));
-        assertEquals("Unexpected name=Bob after condition, expected AND", e.getMessage());
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("42"));
     }
 
     @Test
     void rejectsWhereWithoutCondition() {
         // The REPL only catches IllegalArgumentException, so anything else would crash it
-        assertThrows(IllegalArgumentException.class, () -> Parser.parse("SELECT users WHERE"));
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("SELECT * FROM users WHERE"));
     }
 }
