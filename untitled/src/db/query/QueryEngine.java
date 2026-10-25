@@ -126,7 +126,7 @@ public class QueryEngine {
     private Plan plan(SelectQuery query) {
         TableRef from = query.from();
         List<Join> joins = query.joins();
-        Scope scope = new Scope(!joins.isEmpty());
+        Scope scope = new Scope(!joins.isEmpty(), this);
         Table first = requireTable(from.table());
         scope.add(from.alias(), first);
         List<Table> tables = new ArrayList<>(List.of(first));

@@ -78,6 +78,10 @@ public record FunctionCall(Function function, List<SelectItem> args) implements 
         return call;
     }
 
+    public SelectItem rewrite(Rewriter rewriter) {
+        return new FunctionCall(function, args.stream().map(arg -> arg.rewrite(rewriter)).toList());
+    }
+
     public Object evaluate(Row row) {
         if (SelectItem.stored(this, row)) return row.get(key());
         List<Object> values = new ArrayList<>();

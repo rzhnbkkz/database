@@ -48,6 +48,10 @@ public record Arithmetic(SelectItem left, Operator operator, SelectItem right) i
         return resolved;
     }
 
+    public SelectItem rewrite(Rewriter rewriter) {
+        return new Arithmetic(left.rewrite(rewriter), operator, right.rewrite(rewriter));
+    }
+
     public Object evaluate(Row row) {
         if (SelectItem.stored(this, row)) return row.get(key());
         Object a = left.evaluate(row), b = right.evaluate(row);

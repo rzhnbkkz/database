@@ -35,6 +35,10 @@ public record Aggregate(Function function, SelectItem argument, boolean distinct
         return new Aggregate(function, resolved, distinct);
     }
 
+    public Aggregate rewrite(Rewriter rewriter) {
+        return argument == null ? this : new Aggregate(function, argument.rewrite(rewriter), distinct);
+    }
+
     // In a group row, the result is stored under the aggregate's name
     public Object evaluate(Row row) {
         return row.get(key());

@@ -30,7 +30,8 @@ public class Main {
                 Expressions: columns, values, + - * / %, parentheses, CASE WHEN <condition> THEN ... [ELSE ...] END,
                   UPPER LOWER LENGTH TRIM CONCAT SUBSTRING REPLACE ABS ROUND FLOOR CEIL COALESCE IFNULL NULLIF
                 Conditions: <expression> <op> <expression> with op one of = != <> > < >= <=,
-                  or <expression> IS [NOT] NULL, [NOT] IN (<value>, ...), [NOT] BETWEEN <value> AND <value>,
+                  or <expression> IS [NOT] NULL, [NOT] IN (<value>, ... | SELECT ...), [NOT] BETWEEN <value> AND <value>,
+                  [NOT] EXISTS (SELECT ...), and (SELECT ...) as a value; subqueries may use the outer query's columns
                   [NOT] LIKE '<pattern>' (% any text, _ one character),
                   combined with AND, OR, NOT and parentheses: (a = 1 OR b = 2) AND NOT c = 3
                 Columns: name or table.name (u.name with an alias); u.* selects every column of u;

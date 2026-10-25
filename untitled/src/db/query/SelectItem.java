@@ -8,13 +8,16 @@ import java.util.List;
 
 // A value expression: a column, a literal, an aggregate, arithmetic, a function call or a CASE.
 // Select lists, conditions, ORDER BY, GROUP BY and UPDATE ... SET are all made of these.
-public sealed interface SelectItem permits ColumnRef, Aggregate, Literal, Arithmetic, Negate, FunctionCall, CaseWhen {
+public sealed interface SelectItem permits ColumnRef, Aggregate, Literal, Arithmetic, Negate, FunctionCall, CaseWhen, Subquery {
     // Once resolved, the key its value is stored under in a row: u.id for a column, COUNT(*) for an
     // aggregate in a group row, and its text (UPPER(city)) for a GROUP BY expression in a group row
     String key();
 
     // Checks every column against the scope and turns it into its row key
     SelectItem resolve(Scope scope);
+
+    // The same expression rebuilt with its columns and subqueries passed through the rewriter
+    SelectItem rewrite(Rewriter rewriter);
 
     // The value for one row; null is empty (SQL NULL)
     Object evaluate(Row row);

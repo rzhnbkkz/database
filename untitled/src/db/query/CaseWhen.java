@@ -27,6 +27,12 @@ public record CaseWhen(List<Expression> conditions, List<SelectItem> results, Se
         return new CaseWhen(resolvedConditions, resolvedResults, otherwise == null ? null : otherwise.resolve(scope));
     }
 
+    public SelectItem rewrite(Rewriter rewriter) {
+        return new CaseWhen(conditions.stream().map(condition -> condition.rewrite(rewriter)).toList(),
+                results.stream().map(result -> result.rewrite(rewriter)).toList(),
+                otherwise == null ? null : otherwise.rewrite(rewriter));
+    }
+
     public Object evaluate(Row row) {
         if (SelectItem.stored(this, row)) return row.get(key());
         for (int i = 0; i < conditions.size(); i++) {

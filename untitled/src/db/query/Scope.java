@@ -14,16 +14,47 @@ import java.util.stream.Collectors;
 public class Scope {
     private final boolean qualified;
     private final Map<String, Table> tables = new LinkedHashMap<>();
+    // Where subqueries in this query run; null when there's no engine (then subqueries can't be used)
+    private final QueryEngine engine;
+
+    public Scope(boolean qualified, QueryEngine engine) {
+        this.qualified = qualified;
+        this.engine = engine;
+    }
 
     public Scope(boolean qualified) {
-        this.qualified = qualified;
+        this(qualified, null);
     }
 
     // UPDATE and DELETE: one table, also reachable by its own name (users.id)
-    public static Scope of(Table table) {
-        Scope scope = new Scope(false);
+    public static Scope of(Table table, QueryEngine engine) {
+        Scope scope = new Scope(false, engine);
         scope.add(table.getName(), table);
         return scope;
+    }
+
+    public static Scope of(Table table) {
+        return of(table, null);
+    }
+
+    // The tables a query's FROM and JOINs name, for looking at its column names from outside
+    static Scope forQuery(SelectQuery query, QueryEngine engine) {
+        Scope scope = new Scope(!query.joins().isEmpty(), engine);
+        scope.add(query.from().alias(), engine.requireTable(query.from().table()));
+        for (Join join : query.joins()) scope.add(join.table().alias(), engine.requireTable(join.table().table()));
+        return scope;
+    }
+
+    public QueryEngine engine() {
+        if (engine == null) throw new IllegalArgumentException("Subqueries can't be used here");
+        return engine;
+    }
+
+    // Whether a column name means something here (it may still be ambiguous), without failing like resolve
+    public boolean knows(ColumnRef ref) {
+        if (ref.table() == null) return hasColumn(ref.column());
+        Table table = tables.get(ref.table());
+        return table != null && (ref.isStar() || hasColumn(table, ref.column()));
     }
 
     public void add(String alias, Table table) {

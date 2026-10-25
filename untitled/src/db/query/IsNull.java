@@ -15,6 +15,10 @@ public record IsNull(SelectItem item, boolean negated) implements Expression {
         return new IsNull(item.resolve(scope), negated);
     }
 
+    public Expression rewrite(Rewriter rewriter) {
+        return new IsNull(item.rewrite(rewriter), negated);
+    }
+
     public List<SelectItem> items() {
         return List.of(item);
     }

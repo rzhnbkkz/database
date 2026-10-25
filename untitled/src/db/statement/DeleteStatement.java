@@ -25,7 +25,7 @@ public class DeleteStatement implements Statement {
 
     public void execute(QueryEngine query) {
         Table table = query.requireTable(tableName);
-        int count = QueryEngine.delete(table, where.resolve(Scope.of(table)));
+        int count = QueryEngine.delete(table, where.resolve(Scope.of(table, query)));
         System.out.println(count + (count == 1 ? " row" : " rows") + " deleted");
     }
 }

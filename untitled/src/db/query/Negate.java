@@ -19,6 +19,10 @@ public record Negate(SelectItem operand) implements SelectItem {
         return resolved;
     }
 
+    public SelectItem rewrite(Rewriter rewriter) {
+        return new Negate(operand.rewrite(rewriter));
+    }
+
     public Object evaluate(Row row) {
         if (SelectItem.stored(this, row)) return row.get(key());
         Object value = operand.evaluate(row);

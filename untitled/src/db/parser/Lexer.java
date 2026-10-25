@@ -13,7 +13,7 @@ public class Lexer {
             "INSERT", "INTO", "VALUES", "UPDATE", "SET", "DELETE",
             "CREATE", "TABLE", "PRIMARY", "KEY",
             "JOIN", "INNER", "LEFT", "OUTER", "ON", "AS", "ORDER", "BY", "LIMIT", "GROUP", "HAVING",
-            "DISTINCT", "IS", "IN", "BETWEEN", "LIKE", "CASE", "WHEN", "THEN", "ELSE",
+            "DISTINCT", "IS", "IN", "BETWEEN", "LIKE", "CASE", "WHEN", "THEN", "ELSE", "EXISTS",
             "TRUE", "FALSE", "NULL");
 
     private final String input;

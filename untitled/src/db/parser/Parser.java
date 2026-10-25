@@ -10,8 +10,10 @@ import db.query.Arithmetic;
 import db.query.CaseWhen;
 import db.query.Condition;
 import db.query.ColumnRef;
+import db.query.Exists;
 import db.query.Expression;
 import db.query.FunctionCall;
+import db.query.InSubquery;
 import db.query.IsNull;
 import db.query.Join;
 import db.query.Like;
@@ -20,8 +22,10 @@ import db.query.Negate;
 import db.query.Not;
 import db.query.Or;
 import db.query.OrderBy;
+import db.query.Rewriter;
 import db.query.SelectItem;
 import db.query.SelectQuery;
+import db.query.Subquery;
 import db.query.TableRef;
 import db.statement.AlterTableStatement;
 import db.statement.CreateIndexStatement;
@@ -75,12 +79,14 @@ import java.util.*;
 //   or        := and {OR and}             OR binds loosest, so a AND b OR c is (a AND b) OR c
 //   and       := not {AND not}
 //   not       := NOT not | '(' or ')' | test
-//   test      := expr op expr | expr IS [NOT] NULL | expr [NOT] IN '(' expr {',' expr} ')'
+//   test      := expr op expr | expr IS [NOT] NULL | expr [NOT] IN '(' (expr {',' expr} | select) ')'
+//              | EXISTS '(' select ')'
 //              | expr [NOT] BETWEEN expr AND expr | expr [NOT] LIKE STRING
 //   expr      := term {('+' | '-') term}           * / % bind tighter than + -
 //   term      := unary {('*' | '/' | '%') unary}
 //   unary     := '-' unary | primary
-//   primary   := literal | column | '(' expr ')' | call | case
+//   primary   := literal | column | '(' expr ')' | '(' select ')' | call | case
+//                a subquery used as a value selects one column, and may use the outer query's columns
 //   call      := COUNT '(' '*' ')' | aggregate '(' [DISTINCT] expr ')' | function '(' [expr {',' expr}] ')'
 //                aggregates (COUNT SUM AVG MIN MAX) only in the select list, HAVING and ORDER BY
 //   case      := CASE WHEN or THEN expr {WHEN or THEN expr} [ELSE expr] END
@@ -94,7 +100,8 @@ public class Parser {
     // Whether a name may be a select-list alias: in GROUP BY, HAVING and ORDER BY
     private boolean aliasesAllowed = false;
     // The SELECT list's aliases, which GROUP BY, HAVING and ORDER BY may use in place of what they name
-    private final Map<String, SelectItem> aliases = new HashMap<>();
+    // (each SELECT has its own: a subquery's aliases aren't the outer query's)
+    private Map<String, SelectItem> aliases = new HashMap<>();
 
     private Parser(List<Token> tokens) {
         this.tokens = tokens;
@@ -131,6 +138,20 @@ public class Parser {
     }
 
     private Statement parseSelect() {
+        return new SelectStatement(parseSelectQuery());
+    }
+
+    private SelectQuery parseSelectQuery() {
+        Map<String, SelectItem> outerAliases = aliases;
+        aliases = new HashMap<>();
+        try {
+            return parseSelectBody();
+        } finally {
+            aliases = outerAliases;
+        }
+    }
+
+    private SelectQuery parseSelectBody() {
         expectKeyword("SELECT");
         boolean distinct = acceptKeyword("DISTINCT");
         List<SelectItem> columns = new ArrayList<>();
@@ -196,8 +217,7 @@ public class Parser {
                 limit = parseCount("LIMIT");
             }
         }
-        return new SelectStatement(new SelectQuery(distinct, columns, columnAliases, from, joins, where, groupBy, having,
-                orderBy, limit, offset));
+        return new SelectQuery(distinct, columns, columnAliases, from, joins, where, groupBy, having, orderBy, limit, offset);
     }
 
     // As in MySQL, a whole number in GROUP BY or ORDER BY is a position in the select list: ORDER BY 2 sorts on
@@ -292,6 +312,12 @@ public class Parser {
 
     private SelectItem parsePrimary() {
         Token token = peek();
+        if (token.isSymbol("(") && tokens.get(index + 1).isKeyword("SELECT")) {
+            index++;
+            SelectQuery query = parseOneColumnQuery("A subquery used as a value");
+            expectSymbol(")");
+            return new Subquery(query);
+        }
         if (acceptSymbol("(")) {
             SelectItem inner = parseExpr();
             expectSymbol(")");
@@ -365,9 +391,35 @@ public class Parser {
         return new CaseWhen(conditions, results, otherwise);
     }
 
-    // A constant expression is worked out now, so it's a plain value: id = 2 + 3 is id = 5, which can use an index
+    // A constant expression is worked out now, so it's a plain value: id = 2 + 3 is id = 5, which can use an index.
+    // One with a subquery isn't constant: the subquery runs when the query does.
     private static Object constant(SelectItem item) {
-        return SelectItem.isConstant(item) ? item.evaluate(new Row(Map.of())) : item;
+        return SelectItem.isConstant(item) && !hasSubquery(item) ? item.evaluate(new Row(Map.of())) : item;
+    }
+
+    private static boolean hasSubquery(SelectItem item) {
+        boolean[] found = {false};
+        item.rewrite(new Rewriter() {
+            public SelectItem column(ColumnRef column) {
+                return column;
+            }
+
+            public SelectQuery query(SelectQuery query) {
+                found[0] = true;
+                return query;
+            }
+        });
+        return found[0];
+    }
+
+    // A SELECT whose single column is used as a value (by IN, or as a value itself)
+    private SelectQuery parseOneColumnQuery(String what) {
+        SelectQuery query = parseSelectQuery();
+        if (query.columns().size() != 1 || (query.columns().get(0) instanceof ColumnRef column && column.isStar())) {
+            throw new IllegalArgumentException(what + " must select one column, got "
+                    + (query.columns().isEmpty() ? "*" : String.valueOf(query.columns().size())));
+        }
+        return query;
     }
 
     private ColumnRef parseColumnRef() {
@@ -446,6 +498,7 @@ public class Parser {
         Token after = tokens.get(index + 1);
         if (peek().type() == TokenType.IDENTIFIER && (after.isSymbol(",") || after.isSymbol(")"))) return parseLiteral();
         SelectItem value = within("VALUES", false, this::parseExpr);
+        if (hasSubquery(value)) throw new IllegalArgumentException("VALUES can't use subqueries, got " + value);
         if (!SelectItem.isConstant(value)) throw new IllegalArgumentException("VALUES can't use columns, got " + value);
         return constant(value);
     }
@@ -468,7 +521,7 @@ public class Parser {
         boolean ifNotExists = false;
         if (acceptWord("IF")) {
             expectKeyword("NOT");
-            expectWord("EXISTS");
+            expectKeyword("EXISTS");
             ifNotExists = true;
         }
         String table = expectName("table name");
@@ -553,7 +606,7 @@ public class Parser {
         if (acceptKeyword("TABLE")) {
             boolean ifExists = false;
             if (acceptWord("IF")) {
-                expectWord("EXISTS");
+                expectKeyword("EXISTS");
                 ifExists = true;
             }
             return new DropTableStatement(expectName("table name"), ifExists);
@@ -646,6 +699,12 @@ public class Parser {
     }
 
     private Expression parseCondition() {
+        if (acceptKeyword("EXISTS")) {
+            expectSymbol("(");
+            SelectQuery query = parseSelectQuery();
+            expectSymbol(")");
+            return new Exists(query);
+        }
         SelectItem column = parseExpr();
         if (acceptKeyword("IS")) {
             boolean negated = acceptKeyword("NOT");
@@ -654,8 +713,13 @@ public class Parser {
         }
         boolean negated = acceptKeyword("NOT");
         if (acceptKeyword("IN")) {
-            // x IN (a, b) means x = a OR x = b, which also gives SQL's answer for NULLs in the list
             expectSymbol("(");
+            if (peek().isKeyword("SELECT")) {
+                SelectQuery query = parseOneColumnQuery("A subquery after IN");
+                expectSymbol(")");
+                return new InSubquery(column, query, negated);
+            }
+            // x IN (a, b) means x = a OR x = b, which also gives SQL's answer for NULLs in the list
             List<Expression> options = new ArrayList<>();
             do {
                 options.add(new Condition(column, Condition.Operator.EQUALS, constant(parseExpr())));

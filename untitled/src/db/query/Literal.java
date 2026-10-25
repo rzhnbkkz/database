@@ -16,6 +16,10 @@ public record Literal(Object value) implements SelectItem {
         return this;
     }
 
+    public Literal rewrite(Rewriter rewriter) {
+        return this;
+    }
+
     public Object evaluate(Row row) {
         return value;
     }

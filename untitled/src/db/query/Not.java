@@ -16,6 +16,10 @@ public record Not(Expression part) implements Expression {
         return new Not(part.resolve(scope));
     }
 
+    public Expression rewrite(Rewriter rewriter) {
+        return new Not(part.rewrite(rewriter));
+    }
+
     public List<SelectItem> items() {
         return part.items();
     }

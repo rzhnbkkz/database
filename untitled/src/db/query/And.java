@@ -22,6 +22,10 @@ public record And(List<Expression> parts) implements Expression {
         return new And(parts.stream().map(part -> part.resolve(scope)).toList());
     }
 
+    public Expression rewrite(Rewriter rewriter) {
+        return new And(parts.stream().map(part -> part.rewrite(rewriter)).toList());
+    }
+
     public List<SelectItem> items() {
         return parts.stream().flatMap(part -> part.items().stream()).toList();
     }

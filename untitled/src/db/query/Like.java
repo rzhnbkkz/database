@@ -47,6 +47,10 @@ public final class Like implements Expression {
         return new Like(item.resolve(scope), pattern, negated);
     }
 
+    public Expression rewrite(Rewriter rewriter) {
+        return new Like(item.rewrite(rewriter), pattern, negated);
+    }
+
     public List<SelectItem> items() {
         return List.of(item);
     }

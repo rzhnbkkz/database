@@ -101,6 +101,14 @@ public class Condition implements Expression {
         return new Condition(column.resolve(scope), operator, resolved);
     }
 
+    // A column that becomes a value (an outer row's, in a subquery) is stored as a plain value, so an index
+    // can use it: o.user_id = u.id becomes o.user_id = 5
+    public Condition rewrite(Rewriter rewriter) {
+        Object rewritten = value instanceof SelectItem item ? item.rewrite(rewriter) : value;
+        if (rewritten instanceof Literal literal) rewritten = literal.value();
+        return new Condition(column.rewrite(rewriter), operator, rewritten);
+    }
+
     public List<SelectItem> items() {
         return value instanceof SelectItem item ? List.of(column, item) : List.of(column);
     }

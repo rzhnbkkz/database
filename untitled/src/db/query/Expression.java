@@ -16,6 +16,9 @@ public interface Expression {
     // The same expression with every column checked against the scope and turned into its row key
     Expression resolve(Scope scope);
 
+    // The same condition rebuilt with its columns and subqueries passed through the rewriter
+    Expression rewrite(Rewriter rewriter);
+
     // Every column and aggregate it mentions, so HAVING can be checked and its aggregates computed
     List<SelectItem> items();
 

@@ -25,6 +25,10 @@ public record ColumnRef(String table, String column) implements SelectItem {
         return scope.resolve(this);
     }
 
+    public SelectItem rewrite(Rewriter rewriter) {
+        return rewriter.column(this);
+    }
+
     public Object evaluate(Row row) {
         return row.get(key());
     }

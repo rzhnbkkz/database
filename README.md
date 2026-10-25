@@ -18,6 +18,7 @@ A relational database engine built from scratch in Java, modeled after MySQL.
 - `IS [NOT] NULL`, `[NOT] IN (...)`, `[NOT] BETWEEN ... AND ...`, `[NOT] LIKE 'pattern'`
 - Expressions everywhere a value goes (select list, WHERE/ON/HAVING, GROUP BY, ORDER BY, aggregates, `UPDATE ... SET`, `VALUES`): `+ - * / %`, parentheses, `CASE`, and the functions UPPER, LOWER, LENGTH, TRIM, CONCAT, SUBSTRING, REPLACE, ABS, ROUND, FLOOR, CEIL, COALESCE, IFNULL, NULLIF
 - `GROUP BY` and `ORDER BY` by position in the select list (`ORDER BY 2`), as in MySQL
+- Subqueries: `[NOT] IN (SELECT ...)`, `[NOT] EXISTS (SELECT ...)` and `(SELECT ...)` as a value, also using the outer query's columns (correlated)
 - JOIN: `INNER JOIN` and `LEFT [OUTER] JOIN ... ON`, chained, with table aliases (`users u` or `users AS u`), including self joins
 - Comparing two columns (`ON u.id = o.user_id`, `WHERE price > cost`)
 - Name checking like MySQL: unknown columns and tables are errors, and so is a column name found in more than one joined table
@@ -44,6 +45,9 @@ SELECT DISTINCT name FROM users WHERE name LIKE 'A%' AND id BETWEEN 1 AND 10 AND
 SELECT name AS who, COUNT(*) AS n FROM users WHERE id NOT IN (3, 4) GROUP BY who HAVING n > 0 ORDER BY n DESC;
 SELECT UPPER(name), CASE WHEN active = TRUE THEN 'yes' ELSE 'no' END FROM users WHERE LENGTH(name) > 3;
 UPDATE users SET rank = rank + 1 WHERE active = TRUE;
+SELECT name, (SELECT COUNT(*) FROM orders o WHERE o.user_id = u.id) AS orders FROM users u
+  WHERE EXISTS (SELECT 1 FROM orders o WHERE o.user_id = u.id AND o.total > 10);
+DELETE FROM users WHERE id NOT IN (SELECT user_id FROM orders WHERE user_id IS NOT NULL);
 CREATE TABLE orders (id INTEGER PRIMARY KEY, user_id INTEGER, total FLOAT);
 INSERT INTO orders VALUES (10, 1, 9.5);
 SELECT u.name, o.total FROM users u JOIN orders o ON u.id = o.user_id WHERE o.total > 5;
@@ -75,6 +79,8 @@ Aggregates follow SQL: empty cells are skipped (`COUNT(age)` counts only rows th
 Writes follow MySQL: a multi-row INSERT adds every row or none, and prints the AUTO_INCREMENT numbers it gave out. A column left out of an INSERT (or given `DEFAULT`) gets its DEFAULT, while an explicit NULL stays empty. AUTO_INCREMENT must be the INTEGER primary key; a NULL or missing value gets the next number, a number given by hand moves the counter past it, and numbers of deleted rows aren't reused (the counter is saved with the table). ALTER TABLE does one change at a time: a new NOT NULL column needs a DEFAULT when the table has rows, dropping a column also drops every index that uses it, and the primary key column can't be dropped.
 
 Expressions follow MySQL: an empty (NULL) operand gives an empty result (also in CONCAT; COALESCE, IFNULL and NULLIF are the exceptions), `/` always gives a fraction and dividing by zero gives an empty result, whole numbers stay whole otherwise and overflowing them is an error, ROUND rounds halves away from zero and gives a whole number without decimals, SUBSTRING counts from 1 (negative from the end), and text functions take any value as text. Types are checked before rows are read (`name * 2` is an error). Unlike MySQL, an INTEGER column only takes whole numbers, so `SET n = n / 2` needs ROUND, FLOOR or CEIL. In `UPDATE ... SET`, every expression sees the row as it was before the update (standard SQL; `SET a = b, b = a` swaps). A condition's constant side is worked out while parsing, so `id = 1 + 2` still uses an index; something computed from the column (`id + 0 = 3`) can't. Once rows are grouped, a selected expression can be a GROUP BY expression or built from them (`CONCAT(UPPER(city), '!')` with `GROUP BY UPPER(city)`).
+
+Subqueries follow SQL: a name the subquery's own tables don't have is looked up in the outer query, so `o.user_id = u.id` uses the outer row's `u.id` (also from subqueries nested deeper). A subquery used as a value or after IN selects one column; as a value, no rows give an empty value and more than one row is an error, as in MySQL. `x IN (SELECT ...)` is FALSE when the subquery gives no rows, and like the SQL standard, `NOT IN` matches nothing once the subquery gives an empty value (use `WHERE ... IS NOT NULL` inside, or NOT EXISTS). A subquery without outer columns runs once; one with them runs for each outer row with those columns replaced by the row's values, so an index on the inner table helps a lot (2,000 users × 20,000 orders: 3.6 s without one, 16 ms with). EXISTS stops at the first row. Subqueries in UPDATE and DELETE see the table as it was before the change, so unlike MySQL they may read the table being changed. Not supported yet: subqueries in FROM, ANY/ALL, subqueries in INSERT VALUES, and showing subqueries in EXPLAIN.
 
 Joins are nested loops: without an index each row is compared with every row of the joined table, with an index on the joined column only the matching rows are looked up.
 

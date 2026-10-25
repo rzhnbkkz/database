@@ -37,7 +37,7 @@ public class UpdateStatement implements Statement {
     // As in standard SQL, every expression sees the row as it was before the update: SET a = b, b = a swaps them
     public void execute(QueryEngine query) {
         Table table = query.requireTable(tableName);
-        Scope scope = Scope.of(table);
+        Scope scope = Scope.of(table, query);
         Map<String, Object> resolved = new LinkedHashMap<>();
         boolean perRow = false;
         for (Map.Entry<String, Object> entry : values.entrySet()) {
