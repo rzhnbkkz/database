@@ -19,7 +19,7 @@ A relational database engine built from scratch in Java, modeled after MySQL.
 - ORDER BY on one or more columns, ASC or DESC, including columns that aren't selected; LIMIT with OFFSET (or MySQL's `LIMIT offset, count`)
 - Aggregates `COUNT(*)`, `COUNT(column)`, `SUM`, `AVG`, `MIN`, `MAX` with `GROUP BY` on one or more columns; ORDER BY can sort by an aggregate
 - HAVING to filter groups, comparing aggregates and GROUP BY columns with values or each other (`HAVING MAX(age) > AVG(age)`)
-- Indexes: `CREATE INDEX`, `DROP INDEX`, `SHOW INDEX`, plus an automatic `PRIMARY` index on the primary key. They speed up `column = value` in WHERE (SELECT, UPDATE, DELETE) and the joined table's side of `ON a.x = b.y`
+- Indexes: `CREATE INDEX`, `DROP INDEX`, `SHOW INDEX`, plus an automatic `PRIMARY` index on the primary key. They are sorted, like MySQL's default B-tree indexes, so they speed up both `column = value` and ranges (`<`, `<=`, `>`, `>=`, and two ends combined like `age >= 18 AND age < 30`) in WHERE (SELECT, UPDATE, DELETE) and on the joined table's side of ON (`ON a.x = b.y`, `ON o.total > u.min_total`)
 - `EXPLAIN SELECT ...` shows, per table, whether it is read with an index or a full scan
 - Saving tables to JSON files and loading them back (SAVE / LOAD), including their indexes
 
@@ -54,14 +54,14 @@ Aggregates follow SQL: empty cells are skipped (`COUNT(age)` counts only rows th
 
 Joins are nested loops: without an index each row is compared with every row of the joined table, with an index on the joined column only the matching rows are looked up.
 
-Indexes are hash indexes on one column, so they help `=` only (not `<`, `>`, `!=`, OR or NOT; under OR or NOT the query falls back to a full scan). In a join, the first table can use an index from WHERE and each joined table one from its ON; WHERE conditions on joined tables are not used for lookups. On 3,000 users × 3,000 orders, `JOIN orders o ON u.id = o.user_id` went from about 4.9 s to 7 ms with an index on `orders(user_id)`.
+Indexes cover one column and help `=` and ranges, but not `!=`, OR or NOT (those fall back to a full scan). When several conditions could use an index, `=` wins since it narrows the most, then a range with both ends; any other conditions are still checked on the rows found. Rows found through an index come back in table order, so an index never changes a result. In a join, the first table can use an index from WHERE and each joined table one from its ON; WHERE conditions on joined tables are not used for lookups. On 3,000 users × 3,000 orders, `JOIN orders o ON u.id = o.user_id` went from about 4.9 s to 7 ms with an index on `orders(user_id)`, and on 100,000 rows `WHERE age >= 50000 AND age < 50100` went from 11 ms to 0.1 ms with an index on `age`.
 
 ## Project Structure
 ```
 untitled/
 ├── src/db/
 │   ├── Main.java      entry point
-│   ├── model/         Table, Row, Column, DataType, Index (hash index on one column)
+│   ├── model/         Table, Row, Column, DataType, Index (sorted index on one column)
 │   ├── query/         QueryEngine (incl. joins); WHERE/ON as an Expression tree: Condition, And, Or, Not;
 │   │                  SelectQuery, Scope (name resolution), ColumnRef, Aggregate, TableRef, Join, OrderBy,
 │   │                  IndexLookup (index choice)
@@ -74,4 +74,5 @@ untitled/
 ```
 
 ## Roadmap
-- Range indexes (sorted, for `<` and `>`)
+- ORDER BY read from an index instead of sorting
+- UNIQUE and multi-column indexes

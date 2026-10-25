@@ -145,7 +145,8 @@ class IndexStatementTest {
     @Test
     void conditionsAnIndexCannotAnswerScan() {
         String[] scans = {
-                "id > 11", "id != 11", "id = 11 OR id = 12", "NOT id = 11", "id = user_id", "user_id = 1", "id = NULL",
+                "id != 11", "id = 11 OR id = 12", "NOT id = 11", "id = user_id", "user_id = 1", "id = NULL",
+                "user_id > 1",
         };
         for (String where : scans) {
             assertEquals(List.of("orders: full scan"), explain("SELECT * FROM orders WHERE " + where), where);
