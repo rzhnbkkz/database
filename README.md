@@ -5,6 +5,7 @@ A relational database engine built from scratch in Java, modeled after MySQL.
 ## Current Features
 - In-memory storage with typed columns (INTEGER, VARCHAR, BOOLEAN, FLOAT)
 - Schema validation on insert and update (types and column names)
+- Primary keys: unique and never empty (`id:INTEGER:PRIMARY`)
 - Interactive REPL supporting CREATE, INSERT, SELECT, UPDATE and DELETE
 - WHERE conditions with `=`, `!=`, `>`, `<`, `>=`, `<=`, combined with AND
 - Choosing columns in SELECT
@@ -13,7 +14,7 @@ A relational database engine built from scratch in Java, modeled after MySQL.
 
 ## Usage
 ```
-CREATE users id:INTEGER name:VARCHAR active:BOOLEAN
+CREATE users id:INTEGER:PRIMARY name:VARCHAR active:BOOLEAN
 INSERT users id=1 name="Alice Smith" active=true
 INSERT users id=2 name=Bob active=false
 SELECT users name,id WHERE active=true AND id>=1

@@ -27,7 +27,9 @@ public class TableDeserializer {
             } catch (IllegalArgumentException e) {
                 throw new IllegalArgumentException("Unknown column type: " + typeName);
             }
-            columns.add(new Column(colName, type));
+            Object primaryKey = colObj.getOrDefault("primaryKey", false);
+            if (!(primaryKey instanceof Boolean)) throw new IllegalArgumentException("Expected primaryKey to be true or false");
+            columns.add(new Column(colName, type, (Boolean) primaryKey));
         }
 
         Table table = new Table(name, columns);

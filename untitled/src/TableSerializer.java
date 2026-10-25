@@ -15,7 +15,9 @@ public class TableSerializer {
             Column col = columns.get(i);
             sb.append(i == 0 ? "\n" : ",\n");
             sb.append("    {\"name\": ").append(quote(col.getName()))
-              .append(", \"type\": ").append(quote(col.getDataType().name())).append("}");
+              .append(", \"type\": ").append(quote(col.getDataType().name()));
+            if (col.isPrimaryKey()) sb.append(", \"primaryKey\": true");
+            sb.append("}");
         }
         sb.append(columns.isEmpty() ? "],\n" : "\n  ],\n");
 

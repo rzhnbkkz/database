@@ -152,19 +152,23 @@ public class Parser {
         return new InsertStatement(tableName, row);
     }
 
-    // CREATE <table> <column>:<type> ...
     private static Statement parseCreate(String[] command) {
         String tableName = command[1];
         if (command.length < 3) throw new IllegalArgumentException("Expected at least one column, e.g. id:INTEGER");
+        // CREATE <table> <column>:<type>[:PRIMARY] ...
         List<Column> columns = new ArrayList<>();
         Set<String> names = new HashSet<>();
         for (int i = 2; i < command.length; i++) {
-            String[] pair = command[i].split(":", 2);
-            if (pair.length != 2 || pair[0].isEmpty()) {
-                throw new IllegalArgumentException("Expected column:TYPE, got: " + command[i]);
+            String[] parts = command[i].split(":", 3);
+            if (parts.length < 2 || parts[0].isEmpty()) {
+                throw new IllegalArgumentException("Expected column:TYPE or column:TYPE:PRIMARY, got: " + command[i]);
             }
-            if (!names.add(pair[0])) throw new IllegalArgumentException("Duplicate column: " + pair[0]);
-            columns.add(new Column(pair[0], parseDataType(pair[1])));
+            boolean primaryKey = parts.length == 3;
+            if (primaryKey && !parts[2].equalsIgnoreCase("PRIMARY")) {
+                throw new IllegalArgumentException("Expected PRIMARY after the type, got: " + parts[2]);
+            }
+            if (!names.add(parts[0])) throw new IllegalArgumentException("Duplicate column: " + parts[0]);
+            columns.add(new Column(parts[0], parseDataType(parts[1]), primaryKey));
         }
         return new CreateStatement(tableName, columns);
     }

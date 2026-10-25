@@ -2,7 +2,7 @@ public class Main {
     public static void main(String[] args) {
         System.out.println("""
                 Commands:
-                  CREATE <table> <column>:<type> ...          types: INTEGER, VARCHAR, BOOLEAN, FLOAT
+                  CREATE <table> <column>:<type>[:PRIMARY] ... types: INTEGER, VARCHAR, BOOLEAN, FLOAT
                   INSERT <table> <column>=<value> ...
                   SELECT <table> [<column>,... | *] [WHERE <condition> [AND <condition>] ...]
                   UPDATE <table> SET <column>=<value> ... [WHERE ...]
