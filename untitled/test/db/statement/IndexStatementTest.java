@@ -91,7 +91,7 @@ class IndexStatementTest {
         String[] bad = {
                 "CREATE INDEX ON orders (user_id)", "CREATE INDEX i orders (user_id)", "CREATE INDEX i ON orders",
                 "CREATE INDEX i ON orders ()", "CREATE INDEX i ON orders (user_id", "CREATE INDEX i ON orders (a,)",
-                "CREATE users (id INTEGER)", "DROP INDEX i", "DROP INDEX ON orders", "DROP TABLE orders",
+                "CREATE users (id INTEGER)", "DROP INDEX i", "DROP INDEX ON orders", "DROP orders",
                 "SHOW INDEX orders", "SHOW TABLES", "EXPLAIN", "EXPLAIN DELETE FROM orders",
         };
         for (String sql : bad) {

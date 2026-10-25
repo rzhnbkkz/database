@@ -7,8 +7,13 @@ public class Main {
     public static void main(String[] args) {
         System.out.println("""
                 Commands:
-                  CREATE TABLE <table> (<column> <type> [PRIMARY KEY], ...)   types: INTEGER, VARCHAR, BOOLEAN, FLOAT
-                  INSERT INTO <table> [(<column>, ...)] VALUES (<value>, ...)
+                  CREATE TABLE [IF NOT EXISTS] <table> (<column> <type> [<option> ...], ...)
+                    types: INTEGER, VARCHAR, BOOLEAN, FLOAT
+                    options: PRIMARY KEY, NOT NULL, DEFAULT <value>, AUTO_INCREMENT (INTEGER primary key only)
+                  ALTER TABLE <table> ADD [COLUMN] <column> <type> [<option> ...] | DROP [COLUMN] <column>
+                    | RENAME COLUMN <column> TO <name> | RENAME [TO] <name>
+                  DROP TABLE [IF EXISTS] <table>
+                  INSERT INTO <table> [(<column>, ...)] VALUES (<value>, ...), ...
                   SELECT [DISTINCT] <column> [AS <alias>], ... | * FROM <table> [<alias>]
                     [[INNER | LEFT] JOIN <table> [<alias>] ON <condition>] ... [WHERE <condition>]
                     [GROUP BY <column>, ...] [HAVING <condition>] [ORDER BY <column> [ASC | DESC], ...] [LIMIT <count> [OFFSET <count>]]
@@ -27,7 +32,8 @@ public class Main {
                   combined with AND, OR, NOT and parentheses: (a = 1 OR b = 2) AND NOT c = 3
                 Columns: name or table.name (u.name with an alias); u.* selects every column of u;
                   COUNT(*), COUNT([DISTINCT] <column>), SUM, AVG, MIN, MAX in the column list, HAVING and ORDER BY
-                Values: 42, -1.5, TRUE, FALSE, NULL, 'text' (text always in quotes)""");
+                Values: 42, -1.5, TRUE, FALSE, NULL, 'text' (text always in quotes);
+                  in INSERT and UPDATE ... SET also DEFAULT, the column's default""");
         new REPL().start(new QueryEngine());
     }
 }

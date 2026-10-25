@@ -15,7 +15,8 @@ import java.util.*;
  * Reads tables in the JSON format written by {@link TableSerializer}:
  * {"name": ..., "columns": [{"name": ..., "type": ...}], "indexes": [{"name": ..., "columns": [...], "unique": true}],
  *  "rows": [{col: value, ...}]}
- * "indexes" and "rows" may be left out, and so may an index's "unique". Files from before multi-column
+ * "indexes" and "rows" may be left out, and so may an index's "unique". A column may also have "notNull",
+ * "default" and "autoIncrement", and a table with an AUTO_INCREMENT column a "nextAutoIncrement". Files from before multi-column
  * indexes, with "column": "name" instead of "columns", still load.
  */
 public class TableDeserializer {
@@ -37,12 +38,21 @@ public class TableDeserializer {
             } catch (IllegalArgumentException e) {
                 throw new IllegalArgumentException("Unknown column type: " + typeName);
             }
-            Object primaryKey = colObj.getOrDefault("primaryKey", false);
-            if (!(primaryKey instanceof Boolean)) throw new IllegalArgumentException("Expected primaryKey to be true or false");
-            columns.add(new Column(colName, type, (Boolean) primaryKey));
+            boolean primaryKey = flag(colObj, "primaryKey");
+            Column plain = new Column(colName, type, primaryKey);
+            columns.add(new Column(colName, type, primaryKey, flag(colObj, "notNull"), convert(colObj.get("default"), plain),
+                    flag(colObj, "autoIncrement")));
         }
 
         Table table = new Table(name, columns);
+
+        Object next = obj.get("nextAutoIncrement");
+        if (next != null) {
+            if (!(next instanceof BigDecimal n) || n.scale() > 0 || n.signum() <= 0) {
+                throw new IllegalArgumentException("Expected nextAutoIncrement to be a whole number above 0");
+            }
+            table.restoreNextAutoIncrement(n.longValueExact());
+        }
 
         Object indexesValue = obj.get("indexes");
         if (indexesValue != null) {
@@ -73,6 +83,13 @@ public class TableDeserializer {
             table.insert(new Row(data));
         }
         return table;
+    }
+
+    // An optional true/false property, false when left out
+    private static boolean flag(Map<String, Object> obj, String key) {
+        Object value = obj.getOrDefault(key, false);
+        if (!(value instanceof Boolean b)) throw new IllegalArgumentException("Expected " + key + " to be true or false");
+        return b;
     }
 
     public static Table loadFromFile(String path) throws IOException {

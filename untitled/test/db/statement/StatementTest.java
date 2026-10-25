@@ -130,6 +130,8 @@ class StatementTest {
     @Test
     void parsedStatementsRunEndToEnd() {
         Parser.parse("INSERT INTO users (id, name) VALUES (3, 'Carol')").execute(engine);
+        assertEquals("1 row inserted", output.toString().trim());
+        output.reset();
         Parser.parse("SELECT * FROM users WHERE id = 3").execute(engine);
         assertPrinted("[{id=3, name=Carol}]");
     }

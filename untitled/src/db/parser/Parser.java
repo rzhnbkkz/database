@@ -2,6 +2,7 @@ package db.parser;
 
 import db.model.Column;
 import db.model.DataType;
+import db.model.Table;
 import db.query.Aggregate;
 import db.query.And;
 import db.query.Condition;
@@ -16,10 +17,12 @@ import db.query.OrderBy;
 import db.query.SelectItem;
 import db.query.SelectQuery;
 import db.query.TableRef;
+import db.statement.AlterTableStatement;
 import db.statement.CreateIndexStatement;
 import db.statement.CreateStatement;
 import db.statement.DeleteStatement;
 import db.statement.DropIndexStatement;
+import db.statement.DropTableStatement;
 import db.statement.ExplainStatement;
 import db.statement.InsertStatement;
 import db.statement.LoadStatement;
@@ -33,8 +36,8 @@ import java.util.*;
 
 // Recursive descent parser: one method per grammar rule, each consuming the tokens it recognises.
 //
-//   statement := (select | insert | update | delete | create | createIdx | dropIdx | showIdx | explain
-//                 | save | load) [';']
+//   statement := (select | insert | update | delete | create | alter | drop | createIdx | dropIdx | showIdx
+//                 | explain | save | load) [';']
 //   select    := SELECT [DISTINCT] ('*' | item {',' item}) FROM table {join} [where] [groupBy] [having] [orderBy] [limit]
 //   item      := (aggregate | column) [[AS] name] | name '.' '*'
 //   aggregate := COUNT '(' '*' ')' | (COUNT | SUM | AVG | MIN | MAX) '(' [DISTINCT] column ')'
@@ -47,11 +50,16 @@ import java.util.*;
 //   orderBy   := ORDER BY sortItem {',' sortItem}
 //   sortItem  := (aggregate | column) [ASC | DESC]
 //   limit     := LIMIT count [OFFSET count] | LIMIT count ',' count    (the second: LIMIT offset, count)
-//   insert    := INSERT INTO name ['(' name {',' name} ')'] VALUES '(' literal {',' literal} ')'
-//   update    := UPDATE name SET name '=' literal {',' name '=' literal} [where]
+//   insert    := INSERT INTO name ['(' name {',' name} ')'] VALUES tuple {',' tuple}
+//   tuple     := '(' newValue {',' newValue} ')'
+//   newValue  := literal | DEFAULT
+//   update    := UPDATE name SET name '=' newValue {',' name '=' newValue} [where]
 //   delete    := DELETE FROM name [where]
-//   create    := CREATE TABLE name '(' columnDef {',' columnDef} ')'
-//   columnDef := name type ['(' NUMBER ')'] [PRIMARY KEY]
+//   create    := CREATE TABLE [IF NOT EXISTS] name '(' columnDef {',' columnDef} ')'
+//   columnDef := name type ['(' NUMBER ')'] {PRIMARY KEY | NOT NULL | NULL | DEFAULT literal | AUTO_INCREMENT}
+//   alter     := ALTER TABLE name (ADD [COLUMN] columnDef | DROP [COLUMN] name
+//                 | RENAME COLUMN name TO name | RENAME [TO] name)
+//   drop      := DROP TABLE [IF EXISTS] name
 //   createIdx := CREATE [UNIQUE] INDEX name ON name '(' name {',' name} ')'
 //   dropIdx   := DROP INDEX name ON name
 //   showIdx   := SHOW (INDEX | INDEXES) FROM name
@@ -92,7 +100,8 @@ public class Parser {
             case "UPDATE" -> parseUpdate();
             case "DELETE" -> parseDelete();
             case "CREATE" -> parseCreate();
-            case "DROP" -> parseDropIndex();
+            case "DROP" -> parseDrop();
+            case "ALTER" -> parseAlter();
             case "SHOW" -> parseShowIndex();
             case "EXPLAIN" -> {
                 index++;
@@ -275,13 +284,17 @@ public class Parser {
             }
         }
         expectKeyword("VALUES");
-        expectSymbol("(");
-        List<Object> values = new ArrayList<>();
+        List<List<Object>> rows = new ArrayList<>();
         do {
-            values.add(parseLiteral());
+            expectSymbol("(");
+            List<Object> values = new ArrayList<>();
+            do {
+                values.add(parseNewValue());
+            } while (acceptSymbol(","));
+            expectSymbol(")");
+            rows.add(values);
         } while (acceptSymbol(","));
-        expectSymbol(")");
-        return new InsertStatement(table, columns, values);
+        return InsertStatement.ofRows(table, columns, rows);
     }
 
     private Statement parseUpdate() {
@@ -293,9 +306,14 @@ public class Parser {
             String column = expectName("column name");
             expectSymbol("=");
             if (values.containsKey(column)) throw new IllegalArgumentException("Column '" + column + "' is set twice");
-            values.put(column, parseLiteral());
+            values.put(column, parseNewValue());
         } while (acceptSymbol(","));
         return new UpdateStatement(table, values, parseWhere());
+    }
+
+    // A value to store: a literal, or DEFAULT for the column's default
+    private Object parseNewValue() {
+        return acceptWord("DEFAULT") ? Table.DEFAULT : parseLiteral();
     }
 
     private Statement parseDelete() {
@@ -313,23 +331,76 @@ public class Parser {
             return parseCreateIndex(true);
         }
         if (!acceptKeyword("TABLE")) throw expected("TABLE, INDEX or UNIQUE INDEX");
+        boolean ifNotExists = false;
+        if (acceptWord("IF")) {
+            expectKeyword("NOT");
+            expectWord("EXISTS");
+            ifNotExists = true;
+        }
         String table = expectName("table name");
         expectSymbol("(");
         List<Column> columns = new ArrayList<>();
         Set<String> names = new HashSet<>();
         do {
-            String name = expectName("column name");
-            if (!names.add(name)) throw new IllegalArgumentException("Duplicate column: " + name);
-            DataType type = parseDataType();
-            boolean primaryKey = false;
+            Column column = parseColumnDef();
+            if (!names.add(column.getName())) throw new IllegalArgumentException("Duplicate column: " + column.getName());
+            columns.add(column);
+        } while (acceptSymbol(","));
+        expectSymbol(")");
+        return new CreateStatement(table, columns, ifNotExists);
+    }
+
+    // A column's name, type and options, which may come in any order, as in MySQL
+    private Column parseColumnDef() {
+        String name = expectName("column name");
+        DataType type = parseDataType();
+        boolean primaryKey = false, notNull = false, nullable = false, autoIncrement = false, hasDefault = false;
+        Object defaultValue = null;
+        while (true) {
             if (acceptKeyword("PRIMARY")) {
                 expectKeyword("KEY");
                 primaryKey = true;
+            } else if (acceptKeyword("NOT")) {
+                expectKeyword("NULL");
+                notNull = true;
+            } else if (acceptKeyword("NULL")) {
+                nullable = true;
+            } else if (acceptWord("DEFAULT")) {
+                if (hasDefault) throw new IllegalArgumentException("Column '" + name + "' has two DEFAULTs");
+                defaultValue = parseLiteral();
+                hasDefault = true;
+            } else if (acceptWord("AUTO_INCREMENT")) {
+                autoIncrement = true;
+            } else {
+                break;
             }
-            columns.add(new Column(name, type, primaryKey));
-        } while (acceptSymbol(","));
-        expectSymbol(")");
-        return new CreateStatement(table, columns);
+        }
+        if (notNull && nullable) throw new IllegalArgumentException("Column '" + name + "' can't be both NULL and NOT NULL");
+        return new Column(name, type, primaryKey, notNull, defaultValue, autoIncrement);
+    }
+
+    private Statement parseAlter() {
+        index++;
+        expectKeyword("TABLE");
+        String table = expectName("table name");
+        if (acceptWord("ADD")) {
+            acceptWord("COLUMN");
+            return AlterTableStatement.addColumn(table, parseColumnDef());
+        }
+        if (acceptWord("DROP")) {
+            acceptWord("COLUMN");
+            return AlterTableStatement.dropColumn(table, expectName("column name"));
+        }
+        if (acceptWord("RENAME")) {
+            if (acceptWord("COLUMN")) {
+                String from = expectName("column name");
+                expectWord("TO");
+                return AlterTableStatement.renameColumn(table, from, expectName("new column name"));
+            }
+            if (!acceptWord("TO")) acceptKeyword("AS");
+            return AlterTableStatement.renameTable(table, expectName("new table name"));
+        }
+        throw expected("ADD, DROP or RENAME");
     }
 
     // After CREATE [UNIQUE] INDEX
@@ -343,9 +414,17 @@ public class Parser {
         return new CreateIndexStatement(name, table, columns, unique);
     }
 
-    private Statement parseDropIndex() {
+    private Statement parseDrop() {
         index++;
-        if (!acceptWord("INDEX")) throw expected("INDEX");
+        if (acceptKeyword("TABLE")) {
+            boolean ifExists = false;
+            if (acceptWord("IF")) {
+                expectWord("EXISTS");
+                ifExists = true;
+            }
+            return new DropTableStatement(expectName("table name"), ifExists);
+        }
+        if (!acceptWord("INDEX")) throw expected("TABLE or INDEX");
         String name = expectName("index name");
         expectKeyword("ON");
         return new DropIndexStatement(name, expectName("table name"));
@@ -550,6 +629,10 @@ public class Parser {
         if (peek().type() != TokenType.IDENTIFIER || !peek().text().equalsIgnoreCase(word)) return false;
         index++;
         return true;
+    }
+
+    private void expectWord(String word) {
+        if (!acceptWord(word)) throw expected(word);
     }
 
     private void expectKeyword(String keyword) {

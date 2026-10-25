@@ -24,6 +24,19 @@ public class QueryEngine {
         return table;
     }
 
+    public void dropTable(String tableName) {
+        requireTable(tableName);
+        tablesMap.remove(tableName);
+    }
+
+    public void renameTable(String from, String to) {
+        Table table = requireTable(from);
+        if (tablesMap.containsKey(to)) throw new IllegalArgumentException("Table '" + to + "' already exists");
+        tablesMap.remove(from);
+        table.rename(to);
+        tablesMap.put(to, table);
+    }
+
     public static void insert(Table table, Map<String, Object> values) {
         Row row = new Row(values);
         table.insert(row);

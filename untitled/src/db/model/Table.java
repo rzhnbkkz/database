@@ -8,24 +8,35 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.Predicate;
 
 public class Table {
     // Name of the index every table with a primary key gets, as in MySQL
     public static final String PRIMARY = "PRIMARY";
 
-    private final String name;
-    private final List<Column> columns;
+    // The value DEFAULT in INSERT ... VALUES (DEFAULT) or UPDATE ... SET x = DEFAULT: the column's default
+    public static final Object DEFAULT = new Object() {
+        @Override
+        public String toString() {
+            return "DEFAULT";
+        }
+    };
+
+    private String name;
+    private final List<Column> columns = new ArrayList<>();
     // Rows by id, in insertion order. Ids never change, so indexes can point at rows.
     private final Map<Long, Row> rows = new LinkedHashMap<>();
     private long nextId = 0;
-    private final Column primaryKey;
+    private Column primaryKey;
     private final Map<String, Index> indexes = new LinkedHashMap<>();
+    // The next AUTO_INCREMENT value. Like MySQL, numbers of deleted rows aren't given out again.
+    private long nextAutoIncrement = 1;
 
     public Table(String name, List<Column> columns) {
         this.name = name;
-        this.columns = new ArrayList<>(columns);
-        List<Column> keyColumns = columns.stream().filter(Column::isPrimaryKey).toList();
+        for (Column column : columns) this.columns.add(checked(column));
+        List<Column> keyColumns = this.columns.stream().filter(Column::isPrimaryKey).toList();
         if (keyColumns.size() > 1) throw new IllegalArgumentException("A table can have only one primary key");
         this.primaryKey = keyColumns.isEmpty() ? null : keyColumns.get(0);
         // The primary key index also makes the uniqueness check fast
@@ -34,17 +45,75 @@ public class Table {
         }
     }
 
-    public void insert(Row row) {
-        row = normalize(row.getData());
-        validate(row);
-        if (primaryKey != null) {
-            Object key = requireKey(row);
-            if (!indexes.get(PRIMARY).lookup(key).isEmpty()) throw duplicateKey(key);
+    // Checks a column's options make sense together, and gives a FLOAT column's whole-number default as FLOAT
+    private static Column checked(Column column) {
+        if (column.isAutoIncrement()) {
+            if (column.getDataType() != DataType.INTEGER) {
+                throw new IllegalArgumentException("AUTO_INCREMENT column '" + column.getName() + "' must be INTEGER");
+            }
+            if (!column.isPrimaryKey()) {
+                throw new IllegalArgumentException("AUTO_INCREMENT column '" + column.getName() + "' must be the PRIMARY KEY");
+            }
+            if (column.getDefaultValue() != null) {
+                throw new IllegalArgumentException("AUTO_INCREMENT column '" + column.getName() + "' can't have a DEFAULT");
+            }
         }
-        long id = nextId++;
-        checkUnique(Map.of(id, row), true);
-        rows.put(id, row);
-        for (Index index : indexes.values()) index.add(id, row);
+        Object value = column.getDefaultValue();
+        if (value == null) return column;
+        value = widen(column, value);
+        if (!fits(column, value)) {
+            throw new IllegalArgumentException("DEFAULT for column '" + column.getName() + "' must be " + column.getDataType());
+        }
+        return new Column(column.getName(), column.getDataType(), column.isPrimaryKey(), column.isNotNull(), value,
+                column.isAutoIncrement());
+    }
+
+    public void insert(Row row) {
+        insertAll(List.of(row.getData()));
+    }
+
+    // Inserts every row or, if any of them is invalid, none. A column a row leaves out gets its DEFAULT,
+    // and an AUTO_INCREMENT column left out or NULL gets the next number. Returns the numbers given out.
+    public List<Integer> insertAll(List<Map<String, Object>> newRows) {
+        long next = nextAutoIncrement;
+        long id = nextId;
+        List<Integer> generated = new ArrayList<>();
+        Map<Long, Row> added = new LinkedHashMap<>();
+        Set<Object> newKeys = new HashSet<>();
+        for (Map<String, Object> values : newRows) {
+            Map<String, Object> data = new LinkedHashMap<>(values);
+            for (Column column : columns) {
+                if (column.isAutoIncrement() && data.get(column.getName()) == null) {
+                    if (next > Integer.MAX_VALUE) {
+                        throw new IllegalArgumentException("AUTO_INCREMENT column '" + column.getName() + "' has used up every INTEGER");
+                    }
+                    data.put(column.getName(), (int) next);
+                    generated.add((int) next);
+                    next++;
+                } else if (!data.containsKey(column.getName()) && column.getDefaultValue() != null) {
+                    data.put(column.getName(), column.getDefaultValue());
+                }
+            }
+            Row row = normalize(data);
+            validate(row, true);
+            row = withoutEmptyCells(row);
+            if (primaryKey != null) {
+                Object key = requireKey(row);
+                if (!indexes.get(PRIMARY).lookup(key).isEmpty() || !newKeys.add(key)) throw duplicateKey(key);
+                // A number given by hand moves the counter past it, as in MySQL
+                if (primaryKey.isAutoIncrement()) next = Math.max(next, (Integer) key + 1L);
+            }
+            added.put(id++, row);
+        }
+        checkUnique(added, true);
+
+        for (Map.Entry<Long, Row> entry : added.entrySet()) {
+            rows.put(entry.getKey(), entry.getValue());
+            for (Index index : indexes.values()) index.add(entry.getKey(), entry.getValue());
+        }
+        nextId = id;
+        nextAutoIncrement = next;
+        return generated;
     }
 
     public int delete(Predicate<Row> filter) {
@@ -66,9 +135,15 @@ public class Table {
     }
 
     public int update(Collection<Long> candidates, Predicate<Row> filter, Map<String, Object> values) {
+        // SET x = DEFAULT is the column's default, or empty
+        Map<String, Object> resolved = new LinkedHashMap<>();
+        for (Map.Entry<String, Object> entry : values.entrySet()) {
+            Column column = column(entry.getKey());
+            resolved.put(entry.getKey(), entry.getValue() == DEFAULT ? (column == null ? null : column.getDefaultValue()) : entry.getValue());
+        }
         // Existing cells are already valid, so checking the new values is enough
-        Row changes = normalize(values);
-        validate(changes);
+        Row changes = normalize(resolved);
+        validate(changes, false);
 
         List<Long> matches = matching(candidates, filter);
 
@@ -90,7 +165,7 @@ public class Table {
         for (long id : matches) {
             Map<String, Object> data = new LinkedHashMap<>(rows.get(id).getData());
             data.putAll(changes.getData());
-            updated.put(id, normalize(data));
+            updated.put(id, withoutEmptyCells(normalize(data)));
         }
         checkUnique(updated, false);
 
@@ -101,6 +176,11 @@ public class Table {
                 index.add(entry.getKey(), entry.getValue());
             }
             rows.put(entry.getKey(), entry.getValue());
+        }
+        // A key set by hand moves the AUTO_INCREMENT counter past it, so a later insert doesn't collide
+        if (primaryKey != null && primaryKey.isAutoIncrement() && !matches.isEmpty()
+                && changes.get(primaryKey.getName()) instanceof Integer key) {
+            nextAutoIncrement = Math.max(nextAutoIncrement, key + 1L);
         }
         return matches.size();
     }
@@ -137,6 +217,75 @@ public class Table {
         return matches;
     }
 
+    // ALTER TABLE ... ADD COLUMN: existing rows get the column's DEFAULT, or stay empty
+    public void addColumn(Column column) {
+        if (column(column.getName()) != null) throw new IllegalArgumentException("Column '" + column.getName() + "' already exists");
+        if (column.isPrimaryKey() || column.isAutoIncrement()) {
+            throw new IllegalArgumentException("A PRIMARY KEY or AUTO_INCREMENT column can't be added to an existing table");
+        }
+        Column checked = checked(column);
+        if (checked.isNotNull() && checked.getDefaultValue() == null && !rows.isEmpty()) {
+            throw new IllegalArgumentException("Column '" + checked.getName() + "' is NOT NULL, so it needs a DEFAULT for the existing rows");
+        }
+        columns.add(checked);
+        if (checked.getDefaultValue() != null) {
+            rows.replaceAll((id, row) -> {
+                Map<String, Object> data = new LinkedHashMap<>(row.getData());
+                data.put(checked.getName(), checked.getDefaultValue());
+                return new Row(data);
+            });
+        }
+    }
+
+    // ALTER TABLE ... DROP COLUMN. Indexes that use the column go too; returns their names.
+    public List<String> dropColumn(String columnName) {
+        Column column = requireColumn(columnName);
+        if (column.isPrimaryKey()) throw new IllegalArgumentException("Can't drop the primary key column '" + columnName + "'");
+        if (columns.size() == 1) throw new IllegalArgumentException("Can't drop the only column of table '" + name + "'");
+        List<String> dropped = new ArrayList<>();
+        indexes.values().removeIf(index -> {
+            if (!index.getColumns().contains(columnName)) return false;
+            dropped.add(index.getName());
+            return true;
+        });
+        columns.remove(column);
+        rows.replaceAll((id, row) -> {
+            Map<String, Object> data = new LinkedHashMap<>(row.getData());
+            data.remove(columnName);
+            return new Row(data);
+        });
+        return dropped;
+    }
+
+    // ALTER TABLE ... RENAME COLUMN a TO b: the data, the primary key and indexes follow the new name
+    public void renameColumn(String from, String to) {
+        Column column = requireColumn(from);
+        if (column(to) != null) throw new IllegalArgumentException("Column '" + to + "' already exists");
+        Column renamed = column.renamed(to);
+        columns.set(columns.indexOf(column), renamed);
+        if (column == primaryKey) primaryKey = renamed;
+        rows.replaceAll((id, row) -> {
+            Map<String, Object> data = new LinkedHashMap<>();
+            for (Map.Entry<String, Object> entry : row.getData().entrySet()) {
+                data.put(entry.getKey().equals(from) ? to : entry.getKey(), entry.getValue());
+            }
+            return new Row(data);
+        });
+        indexes.replaceAll((indexName, index) -> {
+            if (!index.getColumns().contains(from)) return index;
+            List<String> indexColumns = index.getColumns().stream().map(c -> c.equals(from) ? to : c).toList();
+            List<DataType> types = indexColumns.stream().map(c -> column(c).getDataType()).toList();
+            Index rebuilt = new Index(indexName, indexColumns, types, index.isUnique());
+            for (Map.Entry<Long, Row> entry : rows.entrySet()) rebuilt.add(entry.getKey(), entry.getValue());
+            return rebuilt;
+        });
+    }
+
+    // ALTER TABLE ... RENAME TO; QueryEngine checks the new name is free
+    public void rename(String newName) {
+        this.name = newName;
+    }
+
     public void createIndex(String indexName, String column) {
         createIndex(indexName, List.of(column), false);
     }
@@ -151,11 +300,7 @@ public class Table {
         }
         if (indexColumns.isEmpty()) throw new IllegalArgumentException("An index needs at least one column");
         List<DataType> types = new ArrayList<>();
-        for (String column : indexColumns) {
-            Column col = columns.stream().filter(c -> c.getName().equals(column)).findFirst()
-                    .orElseThrow(() -> new IllegalArgumentException("Unknown column '" + column + "'"));
-            types.add(col.getDataType());
-        }
+        for (String column : indexColumns) types.add(requireColumn(column).getDataType());
         if (new HashSet<>(indexColumns).size() != indexColumns.size()) {
             throw new IllegalArgumentException("A column is listed twice in index '" + indexName + "'");
         }
@@ -211,6 +356,15 @@ public class Table {
         return primaryKey;
     }
 
+    public long getNextAutoIncrement() {
+        return nextAutoIncrement;
+    }
+
+    // For LOAD: the counter saved with the table, which may be past the biggest key if rows were deleted
+    public void restoreNextAutoIncrement(long next) {
+        nextAutoIncrement = Math.max(nextAutoIncrement, next);
+    }
+
     public List<Row> getRows() {
         return Collections.unmodifiableList(new ArrayList<>(rows.values()));
     }
@@ -233,6 +387,17 @@ public class Table {
         return name;
     }
 
+    // The column with this name, or null
+    private Column column(String columnName) {
+        return columns.stream().filter(c -> c.getName().equals(columnName)).findFirst().orElse(null);
+    }
+
+    private Column requireColumn(String columnName) {
+        Column column = column(columnName);
+        if (column == null) throw new IllegalArgumentException("Unknown column '" + columnName + "'");
+        return column;
+    }
+
     private Object requireKey(Row row) {
         Object key = row.get(primaryKey.getName());
         if (key == null) throw new IllegalArgumentException("Primary key '" + primaryKey.getName() + "' cannot be empty");
@@ -249,9 +414,7 @@ public class Table {
         Map<String, Object> data = new LinkedHashMap<>();
         for (Column col : columns) {
             if (!values.containsKey(col.getName())) continue;
-            Object value = values.get(col.getName());
-            if (col.getDataType() == DataType.FLOAT && value instanceof Integer i) value = i.floatValue();
-            data.put(col.getName(), value);
+            data.put(col.getName(), widen(col, values.get(col.getName())));
         }
         for (Map.Entry<String, Object> entry : values.entrySet()) {
             data.putIfAbsent(entry.getKey(), entry.getValue());
@@ -259,24 +422,42 @@ public class Table {
         return new Row(data);
     }
 
-    private void validate(Row row) {
-        for (String name : row.getData().keySet()) {
-            if (columns.stream().noneMatch(col -> col.getName().equals(name))) {
-                throw new IllegalArgumentException("Unknown column '" + name + "'");
-            }
+    // Empty cells are stored as absent, so an explicit NULL and a column left out look the same
+    private static Row withoutEmptyCells(Row row) {
+        if (!row.getData().containsValue(null)) return row;
+        Map<String, Object> data = new LinkedHashMap<>(row.getData());
+        data.values().removeIf(value -> value == null);
+        return new Row(data);
+    }
+
+    private static Object widen(Column column, Object value) {
+        return column.getDataType() == DataType.FLOAT && value instanceof Integer i ? (Object) i.floatValue() : value;
+    }
+
+    private static boolean fits(Column column, Object value) {
+        return switch (column.getDataType()) {
+            case INTEGER -> value instanceof Integer;
+            case VARCHAR -> value instanceof String;
+            case BOOLEAN -> value instanceof Boolean;
+            case FLOAT -> value instanceof Float;
+        };
+    }
+
+    // complete: the row is a whole new row, so a NOT NULL column it leaves out is an error too.
+    // Otherwise (an UPDATE's changes) only the columns it sets are checked.
+    private void validate(Row row, boolean complete) {
+        for (String columnName : row.getData().keySet()) {
+            if (column(columnName) == null) throw new IllegalArgumentException("Unknown column '" + columnName + "'");
         }
         for (Column col : columns) {
             Object value = row.get(col.getName());
-            if (value == null) continue;
-
-            boolean valid = switch (col.getDataType()) {
-                case INTEGER -> value instanceof Integer;
-                case VARCHAR -> value instanceof String;
-                case BOOLEAN -> value instanceof Boolean;
-                case FLOAT -> value instanceof Float;
-            };
-
-            if (!valid) {
+            if (value == null) {
+                if (col.isNotNull() && (complete || row.getData().containsKey(col.getName()))) {
+                    throw new IllegalArgumentException("Column '" + col.getName() + "' cannot be empty");
+                }
+                continue;
+            }
+            if (!fits(col, value)) {
                 throw new IllegalArgumentException("Column '" + col.getName() + "' expects " + col.getDataType());
             }
         }

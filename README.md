@@ -5,7 +5,10 @@ A relational database engine built from scratch in Java, modeled after MySQL.
 ## Current Features
 - In-memory storage with typed columns (INTEGER, VARCHAR, BOOLEAN, FLOAT)
 - Schema validation on insert and update (types and column names)
-- Primary keys: unique and never empty (`id INTEGER PRIMARY KEY`)
+- Primary keys: unique and never empty (`id INTEGER PRIMARY KEY`), optionally `AUTO_INCREMENT`
+- Column options `NOT NULL` and `DEFAULT <value>`, and `DEFAULT` as a value in INSERT and UPDATE
+- Multi-row INSERT (`VALUES (...), (...)`), all-or-nothing
+- `DROP TABLE [IF EXISTS]`, `CREATE TABLE IF NOT EXISTS`, and `ALTER TABLE` to add, drop and rename columns or rename the table
 - SQL parser (lexer + recursive descent) with error messages that point at the problem, e.g. `Expected FROM, got 'users' at position 10`
 - Interactive REPL supporting CREATE TABLE, INSERT, SELECT, UPDATE and DELETE
 - WHERE conditions with `=`, `!=`, `<>`, `>`, `<`, `>=`, `<=`, combined with AND, OR, NOT and parentheses. NOT binds tightest, then AND, then OR, as in SQL
@@ -24,13 +27,15 @@ A relational database engine built from scratch in Java, modeled after MySQL.
 - Indexes: `CREATE [UNIQUE] INDEX` on one or more columns, `DROP INDEX`, `SHOW INDEX`, plus an automatic `PRIMARY` index on the primary key. They are sorted, like MySQL's default B-tree indexes, so they speed up both `column = value` and ranges (`<`, `<=`, `>`, `>=`, and two ends combined like `age >= 18 AND age < 30`) in WHERE (SELECT, UPDATE, DELETE) and on the joined table's side of ON (`ON a.x = b.y`, `ON o.total > u.min_total`). An ORDER BY that matches an index is read in index order instead of being sorted, and LIMIT then stops reading early
 - UNIQUE indexes reject duplicate values on INSERT and UPDATE (several empty cells are fine, as in MySQL)
 - `EXPLAIN SELECT ...` shows, per table, whether it is read with an index or a full scan
-- Saving tables to JSON files and loading them back (SAVE / LOAD), including their indexes
+- Saving tables to JSON files and loading them back (SAVE / LOAD), including their indexes, column options and AUTO_INCREMENT counter
 
 ## Usage
 ```
-CREATE TABLE users (id INTEGER PRIMARY KEY, name VARCHAR(50), active BOOLEAN);
-INSERT INTO users VALUES (1, 'Alice Smith', TRUE);
-INSERT INTO users (id, name, active) VALUES (2, 'Bob', FALSE);
+CREATE TABLE users (id INTEGER PRIMARY KEY AUTO_INCREMENT, name VARCHAR(50) NOT NULL, active BOOLEAN DEFAULT TRUE);
+INSERT INTO users (name) VALUES ('Alice Smith'), ('Bob');
+INSERT INTO users VALUES (DEFAULT, 'Carol', FALSE);
+ALTER TABLE users ADD COLUMN level INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE users RENAME COLUMN level TO rank;
 SELECT name, id FROM users WHERE active = TRUE AND id >= 1;
 SELECT * FROM users WHERE (id = 1 OR name = 'Bob') AND NOT active = FALSE;
 SELECT DISTINCT name FROM users WHERE name LIKE 'A%' AND id BETWEEN 1 AND 10 AND active IS NOT NULL;
@@ -62,6 +67,8 @@ In a join, `SELECT *` labels every column `table.column` (`u.id`, `o.id`), and c
 Aggregates follow SQL: empty cells are skipped (`COUNT(age)` counts only rows that have an age), `SUM` and `AVG` of no values are empty while `COUNT` is 0, and without GROUP BY the whole result is one row. `SUM` of an INTEGER column is a whole number; `AVG`, and `SUM` of a FLOAT column, are FLOAT. `MIN` and `MAX` work on any column and compare like WHERE (so text is case-sensitive), returning the column's own type. HAVING works like WHERE on the grouped rows: a column it names must be in GROUP BY, an empty aggregate (such as `MIN` of no values) never matches, and without GROUP BY the whole table is one group. Aggregates can't go in WHERE or ON. As in MySQL's default mode, a selected column that isn't inside an aggregate must be in GROUP BY, and `SELECT *` can't be grouped. Aggregates are labeled in upper case as `COUNT(*)` or `SUM(o.total)`, even when written in lower case.
 
 `x BETWEEN a AND b` means `x >= a AND x <= b`, and `x IN (a, b)` means `x = a OR x = b`, as the SQL standard defines them, so `x NOT IN (1, NULL)` matches no row. `IS NULL` is the only test on an empty cell that is never unknown. LIKE uses `%` for any text and `_` for one character, `\` makes the next character literal, and like other text comparisons it is case-sensitive; a pattern with a fixed start (`'Al%'`) on an indexed text column reads an index range. As in MySQL, `AS` is optional (so `SELECT name id` means `name AS id`), an alias wins over a column with the same name in GROUP BY, HAVING and ORDER BY, aliases can't be used in WHERE, and with DISTINCT, ORDER BY can only use selected columns.
+
+Writes follow MySQL: a multi-row INSERT adds every row or none, and prints the AUTO_INCREMENT numbers it gave out. A column left out of an INSERT (or given `DEFAULT`) gets its DEFAULT, while an explicit NULL stays empty. AUTO_INCREMENT must be the INTEGER primary key; a NULL or missing value gets the next number, a number given by hand moves the counter past it, and numbers of deleted rows aren't reused (the counter is saved with the table). ALTER TABLE does one change at a time: a new NOT NULL column needs a DEFAULT when the table has rows, dropping a column also drops every index that uses it, and the primary key column can't be dropped.
 
 Joins are nested loops: without an index each row is compared with every row of the joined table, with an index on the joined column only the matching rows are looked up.
 

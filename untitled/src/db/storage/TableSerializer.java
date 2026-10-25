@@ -25,9 +25,17 @@ public class TableSerializer {
             sb.append("    {\"name\": ").append(quote(col.getName()))
               .append(", \"type\": ").append(quote(col.getDataType().name()));
             if (col.isPrimaryKey()) sb.append(", \"primaryKey\": true");
+            if (col.isNotNull()) sb.append(", \"notNull\": true");
+            if (col.getDefaultValue() != null) sb.append(", \"default\": ").append(valueToJSON(col.getDefaultValue()));
+            if (col.isAutoIncrement()) sb.append(", \"autoIncrement\": true");
             sb.append("}");
         }
         sb.append(columns.isEmpty() ? "],\n" : "\n  ],\n");
+
+        // Saved so numbers of deleted rows aren't given out again after LOAD
+        if (columns.stream().anyMatch(Column::isAutoIncrement)) {
+            sb.append("  \"nextAutoIncrement\": ").append(table.getNextAutoIncrement()).append(",\n");
+        }
 
         // The PRIMARY index comes back with the primary key, so only the others are written
         List<Index> indexes = table.getIndexes().stream().filter(i -> !i.getName().equals(Table.PRIMARY)).toList();
