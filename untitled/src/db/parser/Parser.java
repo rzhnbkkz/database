@@ -9,6 +9,7 @@ import db.query.Expression;
 import db.query.Join;
 import db.query.Not;
 import db.query.Or;
+import db.query.OrderBy;
 import db.query.TableRef;
 import db.statement.CreateIndexStatement;
 import db.statement.CreateStatement;
@@ -29,11 +30,13 @@ import java.util.*;
 //
 //   statement := (select | insert | update | delete | create | createIdx | dropIdx | showIdx | explain
 //                 | save | load) [';']
-//   select    := SELECT ('*' | item {',' item}) FROM table {join} [where]
+//   select    := SELECT ('*' | item {',' item}) FROM table {join} [where] [orderBy] [limit]
 //   item      := column | name '.' '*'
 //   column    := name ['.' name]          table.column, where table may be an alias
 //   table     := name [[AS] name]         the optional second name is an alias
 //   join      := [INNER | LEFT [OUTER]] JOIN table ON or
+//   orderBy   := ORDER BY column [ASC | DESC] {',' column [ASC | DESC]}
+//   limit     := LIMIT count [OFFSET count] | LIMIT count ',' count    (the second: LIMIT offset, count)
 //   insert    := INSERT INTO name ['(' name {',' name} ')'] VALUES '(' literal {',' literal} ')'
 //   update    := UPDATE name SET name '=' literal {',' name '=' literal} [where]
 //   delete    := DELETE FROM name [where]
@@ -100,7 +103,46 @@ public class Parser {
         List<Join> joins = new ArrayList<>();
         Join join;
         while ((join = parseJoin()) != null) joins.add(join);
-        return new SelectStatement(from, joins, columns, parseWhere());
+        Expression where = parseWhere();
+
+        List<OrderBy> orderBy = new ArrayList<>();
+        if (acceptKeyword("ORDER")) {
+            expectKeyword("BY");
+            do {
+                ColumnRef column = parseColumnRef();
+                boolean descending = acceptWord("DESC");
+                if (!descending) acceptWord("ASC");
+                orderBy.add(new OrderBy(column, descending));
+            } while (acceptSymbol(","));
+        }
+
+        Integer limit = null;
+        int offset = 0;
+        if (acceptKeyword("LIMIT")) {
+            limit = parseCount("LIMIT");
+            if (acceptWord("OFFSET")) {
+                offset = parseCount("OFFSET");
+            } else if (acceptSymbol(",")) {
+                // MySQL's LIMIT offset, count
+                offset = limit;
+                limit = parseCount("LIMIT");
+            }
+        }
+        return new SelectStatement(from, joins, columns, where, orderBy, limit, offset);
+    }
+
+    // A whole number, zero or more, for LIMIT and OFFSET
+    private int parseCount(String what) {
+        Token token = peek();
+        if (token.type() != TokenType.NUMBER || token.text().contains(".")) {
+            throw expected("a whole number after " + what);
+        }
+        index++;
+        try {
+            return Integer.parseInt(token.text());
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException(what + " is too large: " + token.text());
+        }
     }
 
     // column or table.*

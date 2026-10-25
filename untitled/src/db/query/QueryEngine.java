@@ -4,6 +4,7 @@ import db.model.Row;
 import db.model.Table;
 
 import java.util.*;
+import java.util.stream.Collectors;
 
 public class QueryEngine {
     private HashMap<String, Table> tablesMap = new LinkedHashMap<>();
@@ -78,9 +79,9 @@ public class QueryEngine {
 
     // Everything a SELECT needs, with names checked and indexes chosen, before touching any rows
     private record Plan(Scope scope, List<Access> accesses, List<Join> joins, List<Expression> conditions,
-                        Expression filter, Map<String, String> output) {}
+                        Expression filter, List<OrderBy> order, Map<String, String> output) {}
 
-    private Plan plan(TableRef from, List<Join> joins, List<ColumnRef> columns, Expression where) {
+    private Plan plan(TableRef from, List<Join> joins, List<ColumnRef> columns, Expression where, List<OrderBy> orderBy) {
         Scope scope = new Scope(!joins.isEmpty());
         Table first = requireTable(from.table());
         scope.add(from.alias(), first);
@@ -93,6 +94,8 @@ public class QueryEngine {
             conditions.add(join.on().resolve(scope));
         }
         Expression filter = where.resolve(scope);
+        // ORDER BY may name any column of the tables, not only selected ones
+        List<OrderBy> order = orderBy.stream().map(item -> item.resolve(scope)).toList();
         Map<String, String> output = new LinkedHashMap<>(); // label -> row key
         for (ColumnRef column : columns) {
             if (column.isStar()) {
@@ -113,13 +116,20 @@ public class QueryEngine {
                     IndexLookup.find(tables.get(i + 1), ref.alias(), true, conditions.get(i), earlier)));
             earlier.add(ref.alias());
         }
-        return new Plan(scope, accesses, joins, conditions, filter, output);
+        return new Plan(scope, accesses, joins, conditions, filter, order, output);
     }
 
     // A full SELECT, with any number of joins. Rows from a single table keep plain column names;
     // joined rows are keyed alias.column. Chosen columns are labeled as written (u.name stays u.name).
     public List<Row> select(TableRef from, List<Join> joins, List<ColumnRef> columns, Expression where) {
-        Plan plan = plan(from, joins, columns, where);
+        return select(from, joins, columns, where, List.of(), null, 0);
+    }
+
+    // Rows are filtered, then sorted, then cut to the LIMIT (null for none), and only then reduced
+    // to the chosen columns, so ORDER BY can use a column that isn't selected
+    public List<Row> select(TableRef from, List<Join> joins, List<ColumnRef> columns, Expression where,
+                            List<OrderBy> orderBy, Integer limit, int offset) {
+        Plan plan = plan(from, joins, columns, where, orderBy);
         Access first = plan.accesses().get(0);
         List<Row> rows = new ArrayList<>();
         for (Row row : first.rows(new Row(Map.of()))) rows.add(withAlias(row, from.alias(), plan.scope()));
@@ -127,9 +137,17 @@ public class QueryEngine {
             rows = join(rows, plan.accesses().get(i + 1), joins.get(i), plan.conditions().get(i), plan.scope());
         }
 
-        List<Row> result = new ArrayList<>();
+        List<Row> matching = new ArrayList<>();
         for (Row row : rows) {
-            if (!plan.filter().matches(row)) continue;
+            if (plan.filter().matches(row)) matching.add(row);
+        }
+        // List.sort is stable, so rows that tie keep their table order
+        if (!plan.order().isEmpty()) matching.sort(comparator(plan.order()));
+        int start = Math.min(offset, matching.size());
+        int end = limit == null ? matching.size() : (int) Math.min(matching.size(), (long) start + limit);
+
+        List<Row> result = new ArrayList<>();
+        for (Row row : matching.subList(start, end)) {
             if (plan.output().isEmpty()) {
                 result.add(row);
                 continue;
@@ -144,12 +162,44 @@ public class QueryEngine {
         return result;
     }
 
-    // One line per table, in the order they are read, saying whether an index is used
+    // One line per table, in the order they are read, saying whether an index is used,
+    // then the sort and limit if there are any
     public List<String> explain(TableRef from, List<Join> joins, List<ColumnRef> columns, Expression where) {
-        List<Access> accesses = plan(from, joins, columns, where).accesses();
+        return explain(from, joins, columns, where, List.of(), null, 0);
+    }
+
+    public List<String> explain(TableRef from, List<Join> joins, List<ColumnRef> columns, Expression where,
+                                List<OrderBy> orderBy, Integer limit, int offset) {
+        Plan plan = plan(from, joins, columns, where, orderBy);
         List<String> lines = new ArrayList<>();
-        for (int i = 0; i < accesses.size(); i++) lines.add(accesses.get(i).describe(i == 0));
+        for (int i = 0; i < plan.accesses().size(); i++) lines.add(plan.accesses().get(i).describe(i == 0));
+        if (!plan.order().isEmpty()) {
+            lines.add("sort by " + plan.order().stream().map(OrderBy::toString).collect(Collectors.joining(", ")));
+        }
+        List<String> cut = new ArrayList<>();
+        if (limit != null) cut.add("limit " + limit);
+        if (offset > 0) cut.add("offset " + offset);
+        if (!cut.isEmpty()) lines.add(String.join(" ", cut));
         return lines;
+    }
+
+    private static Comparator<Row> comparator(List<OrderBy> order) {
+        Comparator<Row> result = null;
+        for (OrderBy item : order) {
+            String key = item.column().key();
+            Comparator<Row> byColumn = (a, b) -> compareForSort(a.get(key), b.get(key));
+            if (item.descending()) byColumn = byColumn.reversed();
+            result = result == null ? byColumn : result.thenComparing(byColumn);
+        }
+        return result;
+    }
+
+    // Values compare like in WHERE. Empty cells come first, as in MySQL, so last with DESC.
+    private static int compareForSort(Object a, Object b) {
+        if (a == null || b == null) return a == null ? (b == null ? 0 : -1) : 1;
+        Integer cmp = Condition.compare(a, b);
+        // Can't happen within one typed column; keep the order rather than fail
+        return cmp == null ? 0 : cmp;
     }
 
     // Each left row is tried against the joined table's rows: all of them, or only the ones its index finds

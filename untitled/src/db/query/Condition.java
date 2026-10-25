@@ -77,8 +77,8 @@ public class Condition implements Expression {
         };
     }
 
-    // Returns null when the two values can't be compared (different kinds)
-    private static Integer compare(Object a, Object b) {
+    // Returns null when the two values can't be compared (different kinds); ORDER BY uses it too
+    static Integer compare(Object a, Object b) {
         if (a instanceof Number x && b instanceof Number y) return Double.compare(x.doubleValue(), y.doubleValue());
         if (a instanceof String x && b instanceof String y) return x.compareTo(y);
         if (a instanceof Boolean x && b instanceof Boolean y) return x.compareTo(y);

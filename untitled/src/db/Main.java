@@ -11,6 +11,7 @@ public class Main {
                   INSERT INTO <table> [(<column>, ...)] VALUES (<value>, ...)
                   SELECT <column>, ... | * FROM <table> [<alias>]
                     [[INNER | LEFT] JOIN <table> [<alias>] ON <condition>] ... [WHERE <condition>]
+                    [ORDER BY <column> [ASC | DESC], ...] [LIMIT <count> [OFFSET <count>]]
                   UPDATE <table> SET <column> = <value>, ... [WHERE ...]
                   DELETE FROM <table> [WHERE ...]
                   CREATE INDEX <name> ON <table> (<column>)

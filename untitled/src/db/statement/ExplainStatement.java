@@ -15,7 +15,8 @@ public class ExplainStatement implements Statement {
     }
 
     public void execute(QueryEngine query) {
-        for (String line : query.explain(select.getFrom(), select.getJoins(), select.getColumns(), select.getWhere())) {
+        for (String line : query.explain(select.getFrom(), select.getJoins(), select.getColumns(), select.getWhere(),
+                select.getOrderBy(), select.getLimit(), select.getOffset())) {
             System.out.println(line);
         }
     }
