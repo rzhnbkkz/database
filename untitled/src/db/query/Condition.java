@@ -2,9 +2,7 @@ package db.query;
 
 import db.model.Row;
 
-import java.util.List;
-
-public class Condition {
+public class Condition implements Expression {
     public enum Operator {
         EQUALS("="), NOT_EQUALS("!="), GREATER(">"), LESS("<"), GREATER_OR_EQUAL(">="), LESS_OR_EQUAL("<=");
 
@@ -52,10 +50,10 @@ public class Condition {
         return value;
     }
 
-    public boolean matches(Row row) {
+    public Boolean evaluate(Row row) {
         Object cell = row.get(column);
-        // Like SQL NULL, an empty cell never matches
-        if (cell == null || value == null) return false;
+        // Like SQL NULL, comparing an empty cell is unknown, so it never matches, even with NOT
+        if (cell == null || value == null) return null;
         Integer cmp = compare(cell, value);
         if (operator == Operator.NOT_EQUALS) return cmp == null || cmp != 0;
         if (cmp == null) return false;
@@ -69,19 +67,16 @@ public class Condition {
         };
     }
 
-    public static boolean matchesAll(List<Condition> conditions, Row row) {
-        for (Condition condition : conditions) {
-            if (!condition.matches(row)) return false;
-        }
-        return true;
-    }
-
     // Returns null when the two values can't be compared (different kinds)
     private static Integer compare(Object a, Object b) {
         if (a instanceof Number x && b instanceof Number y) return Double.compare(x.doubleValue(), y.doubleValue());
         if (a instanceof String x && b instanceof String y) return x.compareTo(y);
         if (a instanceof Boolean x && b instanceof Boolean y) return x.compareTo(y);
         return null;
+    }
+
+    public int precedence() {
+        return 4;
     }
 
     @Override

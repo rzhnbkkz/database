@@ -31,11 +31,11 @@ public class QueryEngine {
         return new ArrayList<>(table.getRows());
     }
 
-    // An empty condition list matches every row
-    public static List<Row> selectWhere(Table table, List<Condition> conditions) {
+    // Expression.ALL_ROWS matches every row
+    public static List<Row> selectWhere(Table table, Expression where) {
         List<Row> result = new ArrayList<>();
         for (Row row : table.getRows()) {
-            if (Condition.matchesAll(conditions, row)) {
+            if (where.matches(row)) {
                 result.add(row);
             }
         }
@@ -43,13 +43,13 @@ public class QueryEngine {
     }
 
     // Matching rows reduced to the given columns, in that order; an empty column list keeps every column
-    public static List<Row> select(Table table, List<String> columns, List<Condition> conditions) {
+    public static List<Row> select(Table table, List<String> columns, Expression where) {
         for (String column : columns) {
             if (table.getColumns().stream().noneMatch(col -> col.getName().equals(column))) {
                 throw new IllegalArgumentException("Unknown column '" + column + "'");
             }
         }
-        List<Row> rows = selectWhere(table, conditions);
+        List<Row> rows = selectWhere(table, where);
         if (columns.isEmpty()) return rows;
         List<Row> result = new ArrayList<>();
         for (Row row : rows) {
@@ -64,14 +64,14 @@ public class QueryEngine {
     }
 
     public static List<Row> selectWhere(Table table, String column, Object value) {
-        return selectWhere(table, List.of(new Condition(column, value)));
+        return selectWhere(table, new Condition(column, value));
     }
 
-    public static int delete(Table table, List<Condition> conditions) {
-        return table.delete(row -> Condition.matchesAll(conditions, row));
+    public static int delete(Table table, Expression where) {
+        return table.delete(where::matches);
     }
 
-    public static int update(Table table, Map<String, Object> values, List<Condition> conditions) {
-        return table.update(row -> Condition.matchesAll(conditions, row), values);
+    public static int update(Table table, Map<String, Object> values, Expression where) {
+        return table.update(where::matches, values);
     }
 }

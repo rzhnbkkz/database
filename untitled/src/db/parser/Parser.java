@@ -2,7 +2,11 @@ package db.parser;
 
 import db.model.Column;
 import db.model.DataType;
+import db.query.And;
 import db.query.Condition;
+import db.query.Expression;
+import db.query.Not;
+import db.query.Or;
 import db.statement.CreateStatement;
 import db.statement.DeleteStatement;
 import db.statement.InsertStatement;
@@ -25,7 +29,10 @@ import java.util.*;
 //   columnDef := name type ['(' NUMBER ')'] [PRIMARY KEY]
 //   save      := SAVE name STRING
 //   load      := LOAD STRING
-//   where     := WHERE name op literal {AND name op literal}
+//   where     := WHERE or
+//   or        := and {OR and}             OR binds loosest, so a AND b OR c is (a AND b) OR c
+//   and       := not {AND not}
+//   not       := NOT not | '(' or ')' | name op literal
 //   literal   := STRING | ['-'] NUMBER | TRUE | FALSE | NULL
 public class Parser {
     private final List<Token> tokens;
@@ -165,15 +172,37 @@ public class Parser {
         return new LoadStatement(expectString("a file path in quotes"));
     }
 
-    // Empty when there is no WHERE
-    private List<Condition> parseWhere() {
-        List<Condition> conditions = new ArrayList<>();
-        if (!acceptKeyword("WHERE")) return conditions;
+    // Expression.ALL_ROWS when there is no WHERE
+    private Expression parseWhere() {
+        if (!acceptKeyword("WHERE")) return Expression.ALL_ROWS;
+        return parseOr();
+    }
+
+    // A chain like a OR b OR c becomes one Or with three parts
+    private Expression parseOr() {
+        List<Expression> parts = new ArrayList<>();
         do {
-            conditions.add(parseCondition());
-            if (peek().isKeyword("OR")) throw new IllegalArgumentException("OR is not supported yet, only AND");
+            parts.add(parseAnd());
+        } while (acceptKeyword("OR"));
+        return parts.size() == 1 ? parts.get(0) : new Or(parts);
+    }
+
+    private Expression parseAnd() {
+        List<Expression> parts = new ArrayList<>();
+        do {
+            parts.add(parseNot());
         } while (acceptKeyword("AND"));
-        return conditions;
+        return parts.size() == 1 ? parts.get(0) : new And(parts);
+    }
+
+    private Expression parseNot() {
+        if (acceptKeyword("NOT")) return new Not(parseNot());
+        if (acceptSymbol("(")) {
+            Expression inner = parseOr();
+            expectSymbol(")");
+            return inner;
+        }
+        return parseCondition();
     }
 
     private Condition parseCondition() {

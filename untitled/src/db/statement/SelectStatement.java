@@ -1,6 +1,6 @@
 package db.statement;
 
-import db.query.Condition;
+import db.query.Expression;
 import db.query.QueryEngine;
 
 import java.util.List;
@@ -8,28 +8,28 @@ import java.util.List;
 public class SelectStatement implements Statement{
     private String tableName;
     private List<String> columns;
-    private List<Condition> conditions;
+    private Expression where;
 
-    public SelectStatement(String tableName, List<String> columns, List<Condition> conditions) {
+    public SelectStatement(String tableName, List<String> columns, Expression where) {
         this.tableName = tableName;
         this.columns = columns;
-        this.conditions = conditions;
+        this.where = where;
     }
 
-    public SelectStatement(String tableName, List<Condition> conditions) {
-        this(tableName, List.of(), conditions);
+    public SelectStatement(String tableName, Expression where) {
+        this(tableName, List.of(), where);
     }
 
     public SelectStatement(String tableName) {
-        this(tableName, List.of());
+        this(tableName, Expression.ALL_ROWS);
     }
 
     public List<String> getColumns() {
         return columns;
     }
 
-    public List<Condition> getConditions() {
-        return conditions;
+    public Expression getWhere() {
+        return where;
     }
 
     public String getTableName() {
@@ -37,6 +37,6 @@ public class SelectStatement implements Statement{
     }
 
     public void execute(QueryEngine query) {
-        System.out.println(QueryEngine.select(query.requireTable(tableName), columns, conditions));
+        System.out.println(QueryEngine.select(query.requireTable(tableName), columns, where));
     }
 }

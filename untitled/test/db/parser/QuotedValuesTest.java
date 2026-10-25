@@ -136,14 +136,14 @@ class QuotedValuesTest {
         assertEquals("Bob", users.getRows().get(1).get("name"));
 
         SelectStatement s = (SelectStatement) Parser.parse("SELECT * FROM users WHERE name != 'Robert Smith' AND id >= 1");
-        assertEquals(List.of(2), QueryEngine.selectWhere(users, s.getConditions()).stream().map(r -> r.get("id")).toList());
+        assertEquals(List.of(2), QueryEngine.selectWhere(users, s.getWhere()).stream().map(r -> r.get("id")).toList());
     }
 
     @Test
     void quotedNumberDoesNotMatchIntegerColumn() {
         run("INSERT INTO users (id) VALUES (1)");
         SelectStatement s = (SelectStatement) Parser.parse("SELECT * FROM users WHERE id = '1'");
-        assertTrue(QueryEngine.selectWhere(users, s.getConditions()).isEmpty());
+        assertTrue(QueryEngine.selectWhere(users, s.getWhere()).isEmpty());
     }
 
     @Test

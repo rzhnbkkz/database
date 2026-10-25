@@ -117,13 +117,13 @@ class StatementTest {
 
     @Test
     void selectStatementPrintsOnlyMatchingRows() {
-        new SelectStatement("users", List.of(new Condition("name", "Bob"))).execute(engine);
+        new SelectStatement("users", new Condition("name", "Bob")).execute(engine);
         assertPrinted("[{id=2, name=Bob}]");
     }
 
     @Test
     void selectStatementPrintsEmptyListWhenNothingMatches() {
-        new SelectStatement("users", List.of(new Condition("name", "Zoe"))).execute(engine);
+        new SelectStatement("users", new Condition("name", "Zoe")).execute(engine);
         assertPrinted("[]");
     }
 

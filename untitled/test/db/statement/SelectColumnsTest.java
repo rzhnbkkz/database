@@ -1,5 +1,6 @@
 package db.statement;
 
+import db.query.Expression;
 import db.model.Column;
 import db.model.DataType;
 import db.model.Row;
@@ -54,14 +55,14 @@ class SelectColumnsTest {
     void parsesColumnList() {
         SelectStatement s = assertInstanceOf(SelectStatement.class, Parser.parse("SELECT name, id FROM users"));
         assertEquals(List.of("name", "id"), s.getColumns());
-        assertTrue(s.getConditions().isEmpty());
+        assertSame(Expression.ALL_ROWS, s.getWhere());
     }
 
     @Test
     void parsesColumnListWithWhere() {
         SelectStatement s = assertInstanceOf(SelectStatement.class, Parser.parse("SELECT name FROM users WHERE id > 1"));
         assertEquals(List.of("name"), s.getColumns());
-        assertEquals("id>1", s.getConditions().get(0).toString());
+        assertEquals("id>1", s.getWhere().toString());
     }
 
     @Test
@@ -120,7 +121,7 @@ class SelectColumnsTest {
 
     @Test
     void queryEngineSelectProjectsRows() {
-        List<Row> rows = QueryEngine.select(users, List.of("id"), List.of(new Condition("active", true)));
+        List<Row> rows = QueryEngine.select(users, List.of("id"), new Condition("active", true));
         assertEquals(List.of(Map.of("id", 1), Map.of("id", 3)), rows.stream().map(Row::getData).toList());
     }
 }

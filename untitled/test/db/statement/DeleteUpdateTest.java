@@ -1,5 +1,7 @@
 package db.statement;
 
+import db.query.Expression;
+import db.query.Condition;
 import db.model.Column;
 import db.model.DataType;
 import db.model.Table;
@@ -57,11 +59,11 @@ class DeleteUpdateTest {
     void parsesDeleteWithAndWithoutWhere() {
         DeleteStatement all = assertInstanceOf(DeleteStatement.class, Parser.parse("DELETE FROM users"));
         assertEquals("users", all.getTableName());
-        assertTrue(all.getConditions().isEmpty());
+        assertSame(Expression.ALL_ROWS, all.getWhere());
 
         DeleteStatement some = assertInstanceOf(DeleteStatement.class, Parser.parse("delete from users where id = 2"));
-        assertEquals("id", some.getConditions().get(0).getColumn());
-        assertEquals(2, some.getConditions().get(0).getValue());
+        assertEquals("id", ((Condition) some.getWhere()).getColumn());
+        assertEquals(2, ((Condition) some.getWhere()).getValue());
     }
 
     @Test
@@ -108,8 +110,8 @@ class DeleteUpdateTest {
                 Parser.parse("UPDATE users SET name = 'Robert', active = TRUE WHERE id = 2"));
         assertEquals("users", s.getTableName());
         assertEquals(Map.of("name", "Robert", "active", true), s.getValues());
-        assertEquals("id", s.getConditions().get(0).getColumn());
-        assertEquals(2, s.getConditions().get(0).getValue());
+        assertEquals("id", ((Condition) s.getWhere()).getColumn());
+        assertEquals(2, ((Condition) s.getWhere()).getValue());
     }
 
     @Test

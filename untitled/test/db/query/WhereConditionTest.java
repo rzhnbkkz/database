@@ -46,7 +46,7 @@ class WhereConditionTest {
 
     private List<Object> idsWhere(String where) {
         SelectStatement s = (SelectStatement) Parser.parse("SELECT * FROM users WHERE " + where);
-        return QueryEngine.selectWhere(users, s.getConditions()).stream().map(r -> r.get("id")).toList();
+        return QueryEngine.selectWhere(users, s.getWhere()).stream().map(r -> r.get("id")).toList();
     }
 
     // Parsing
@@ -59,7 +59,7 @@ class WhereConditionTest {
         };
         for (String[] c : cases) {
             SelectStatement s = (SelectStatement) Parser.parse("SELECT * FROM users WHERE " + c[0]);
-            Condition condition = s.getConditions().get(0);
+            Condition condition = (Condition) s.getWhere();
             assertEquals("id", condition.getColumn(), c[0]);
             assertEquals(c[1], condition.getOperator().getSymbol(), c[0]);
             assertEquals(1, condition.getValue(), c[0]);
@@ -69,21 +69,22 @@ class WhereConditionTest {
     @Test
     void parsesNegativeNumberAfterOperator() {
         SelectStatement s = (SelectStatement) Parser.parse("SELECT * FROM users WHERE id > -5");
-        assertEquals(Condition.Operator.GREATER, s.getConditions().get(0).getOperator());
-        assertEquals(-5, s.getConditions().get(0).getValue());
+        assertEquals(Condition.Operator.GREATER, ((Condition) s.getWhere()).getOperator());
+        assertEquals(-5, ((Condition) s.getWhere()).getValue());
     }
 
     @Test
     void parsesConditionsJoinedWithAnd() {
         SelectStatement s = (SelectStatement) Parser.parse("SELECT * FROM users WHERE id > 1 and active = true AND name != 'Bob'");
-        assertEquals(List.of("id>1", "active=true", "name!=Bob"),
-                s.getConditions().stream().map(Condition::toString).toList());
+        assertEquals("id>1 AND active=true AND name!=Bob", s.getWhere().toString());
+        assertEquals(3, ((And) s.getWhere()).parts().size(), "a chain of ANDs is one And node");
     }
 
     @Test
     void rejectsMalformedConditions() {
         String[] bad = {
-                "WHERE id", "WHERE = 1", "WHERE id ! 1", "WHERE id = 1 AND", "WHERE id = 1 OR id = 2",
+                "WHERE id", "WHERE = 1", "WHERE id ! 1", "WHERE id = 1 AND", "WHERE id = 1 OR", "WHERE NOT", "WHERE (id = 1",
+                "WHERE id = 1)", "WHERE ()", "WHERE NOT (id = 1", "WHERE id = 1 AND OR id = 2",
                 "WHERE id = 1 id = 2", "WHERE id = Bob", "WHERE id = = 1", "WHERE",
         };
         for (String where : bad) {
@@ -99,10 +100,100 @@ class WhereConditionTest {
     }
 
     @Test
-    void orErrorSaysItIsNotSupported() {
+    void missingClosingParenthesisIsReported() {
         IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
-                () -> Parser.parse("SELECT * FROM users WHERE id = 1 OR id = 2"));
-        assertEquals("OR is not supported yet, only AND", e.getMessage());
+                () -> Parser.parse("SELECT * FROM users WHERE (id = 1 OR id = 2"));
+        assertEquals("Expected ')', got end of input", e.getMessage());
+        e = assertThrows(IllegalArgumentException.class, () -> Parser.parse("SELECT * FROM users WHERE id = 1)"));
+        assertEquals("Unexpected ')' at position 33", e.getMessage());
+    }
+
+    @Test
+    void parsesOrNotAndParenthesesIntoATree() {
+        String[][] cases = {
+                // input, how the parser grouped it
+                {"id = 1 OR id = 2 OR id = 3", "id=1 OR id=2 OR id=3"},
+                {"id = 1 OR id = 2 AND active = TRUE", "id=1 OR id=2 AND active=true"},
+                {"(id = 1 OR id = 2) AND active = TRUE", "(id=1 OR id=2) AND active=true"},
+                {"NOT id = 1 AND active = TRUE", "NOT id=1 AND active=true"},
+                {"NOT (id = 1 AND active = TRUE)", "NOT (id=1 AND active=true)"},
+                {"NOT NOT id = 1", "NOT NOT id=1"},
+                {"((id = 1))", "id=1"},
+                {"id = 1 AND (id = 2 OR NOT (id = 3 AND id = 4))", "id=1 AND (id=2 OR NOT (id=3 AND id=4))"},
+        };
+        for (String[] c : cases) {
+            assertEquals(c[1], ((SelectStatement) Parser.parse("SELECT * FROM users WHERE " + c[0])).getWhere().toString(), c[0]);
+        }
+    }
+
+    @Test
+    void chainOfOrsIsOneOrNode() {
+        SelectStatement s = (SelectStatement) Parser.parse("SELECT * FROM users WHERE id = 1 OR id = 2 OR id = 3");
+        assertEquals(3, ((Or) s.getWhere()).parts().size());
+    }
+
+    // OR, NOT and parentheses
+
+    @Test
+    void orNeedsAnyCondition() {
+        assertEquals(List.of(1, 3), idsWhere("name = 'Alice' OR name = 'Carol'"));
+        assertEquals(List.of(1, 2, 3), idsWhere("id = 1 OR id = 2 OR id = 3"));
+        assertEquals(List.of(), idsWhere("id = 9 OR name = 'Zoe'"));
+    }
+
+    @Test
+    void andBindsTighterThanOr() {
+        // id = 1 OR (id = 2 AND active = TRUE): Bob is inactive, so only Alice
+        assertEquals(List.of(1), idsWhere("id = 1 OR id = 2 AND active = TRUE"));
+        assertEquals(List.of(1, 3), idsWhere("active = TRUE AND id = 1 OR id = 3"));
+    }
+
+    @Test
+    void parenthesesChangeGrouping() {
+        assertEquals(List.of(1), idsWhere("(id = 1 OR id = 2) AND active = TRUE"));
+        assertEquals(List.of(1, 3), idsWhere("active = TRUE AND (id = 1 OR id = 3)"));
+        assertEquals(List.of(3), idsWhere("active = TRUE AND (id = 2 OR id = 3)"));
+    }
+
+    @Test
+    void notFlipsTheCondition() {
+        assertEquals(List.of(2, 3, 4), idsWhere("NOT id = 1"));
+        assertEquals(List.of(3, 4), idsWhere("NOT (id = 1 OR id = 2)"));
+        assertEquals(List.of(1), idsWhere("NOT NOT id = 1"));
+    }
+
+    @Test
+    void notBindsTighterThanAnd() {
+        // (NOT id = 1) AND active = TRUE
+        assertEquals(List.of(3), idsWhere("NOT id = 1 AND active = TRUE"));
+        assertEquals(List.of(2, 3, 4), idsWhere("NOT (id = 1 AND active = TRUE)"));
+    }
+
+    @Test
+    void notOfEmptyCellStillDoesNotMatch() {
+        // Row 4 has no name or active value: the comparison is unknown, and NOT unknown is still unknown
+        assertEquals(List.of(1, 3), idsWhere("NOT name = 'Bob'"));
+        assertEquals(List.of(2), idsWhere("NOT active = TRUE"));
+    }
+
+    @Test
+    void unknownCombinesLikeSql() {
+        // Row 4: unknown OR TRUE is TRUE
+        assertEquals(List.of(2, 4), idsWhere("name = 'Bob' OR id = 4"));
+        // Row 4: unknown AND FALSE is FALSE, so NOT makes it TRUE
+        assertEquals(List.of(1, 2, 3, 4), idsWhere("NOT (name = 'Bob' AND id = 1)"));
+        // Row 4: unknown AND TRUE is unknown, and so is NOT of it
+        assertEquals(List.of(1, 2, 3), idsWhere("NOT (name = 'Zoe' AND id = 4)"));
+    }
+
+    @Test
+    void keywordsAreCaseInsensitive() {
+        assertEquals(List.of(3, 4), idsWhere("not (id = 1 or id = 2)"));
+    }
+
+    @Test
+    void parenthesesNeedNoSpaces() {
+        assertEquals(List.of(1), idsWhere("(id=1 OR id=2)AND(active=TRUE)"));
     }
 
     @Test
@@ -175,7 +266,7 @@ class WhereConditionTest {
 
     @Test
     void emptyConditionListMatchesEveryRow() {
-        assertEquals(4, QueryEngine.selectWhere(users, List.of()).size());
+        assertEquals(4, QueryEngine.selectWhere(users, Expression.ALL_ROWS).size());
     }
 
     // Operators and AND in DELETE and UPDATE
@@ -191,5 +282,17 @@ class WhereConditionTest {
         Parser.parse("UPDATE users SET active = false WHERE score >= 7").execute(engine);
         assertEquals(List.of(1, 2), idsWhere("active=false"));
         assertEquals(List.of(3), idsWhere("active=true"));
+    }
+
+    @Test
+    void deleteWithOrAndNot() {
+        Parser.parse("DELETE FROM users WHERE id = 1 OR NOT (active = TRUE)").execute(engine);
+        assertEquals(List.of(3, 4), users.getRows().stream().map(r -> r.get("id")).toList());
+    }
+
+    @Test
+    void updateWithOrAndParentheses() {
+        Parser.parse("UPDATE users SET score = 0 WHERE (id = 1 OR id = 2) AND active = TRUE").execute(engine);
+        assertEquals(List.of(0.0f, 7.0f, 4.25f), users.getRows().stream().limit(3).map(r -> r.get("score")).toList());
     }
 }

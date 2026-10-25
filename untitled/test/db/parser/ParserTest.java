@@ -1,5 +1,7 @@
 package db.parser;
 
+import db.query.Expression;
+import db.query.Condition;
 import db.statement.InsertStatement;
 import db.statement.SelectStatement;
 
@@ -21,7 +23,7 @@ class ParserTest {
         SelectStatement s = assertInstanceOf(SelectStatement.class, Parser.parse("SELECT * FROM users"));
         assertEquals("users", s.getTableName());
         assertTrue(s.getColumns().isEmpty());
-        assertTrue(s.getConditions().isEmpty());
+        assertSame(Expression.ALL_ROWS, s.getWhere());
     }
 
     @Test
@@ -29,14 +31,14 @@ class ParserTest {
         SelectStatement s = assertInstanceOf(SelectStatement.class,
                 Parser.parse("SELECT * FROM users WHERE name = 'Alice'"));
         assertEquals("users", s.getTableName());
-        assertEquals("name", s.getConditions().get(0).getColumn());
-        assertEquals("Alice", s.getConditions().get(0).getValue());
+        assertEquals("name", ((Condition) s.getWhere()).getColumn());
+        assertEquals("Alice", ((Condition) s.getWhere()).getValue());
     }
 
     @Test
     void keywordsAreCaseInsensitive() {
         SelectStatement s = assertInstanceOf(SelectStatement.class, Parser.parse("select * from users where id = 1"));
-        assertEquals(1, s.getConditions().get(0).getValue());
+        assertEquals(1, ((Condition) s.getWhere()).getValue());
         assertInstanceOf(InsertStatement.class, Parser.parse("Insert Into users Values (1)"));
     }
 
@@ -51,7 +53,7 @@ class ParserTest {
     void whitespaceIsOptionalAroundSymbols() {
         SelectStatement s = (SelectStatement) Parser.parse("   SELECT id,name FROM users WHERE id>=1   ");
         assertEquals(List.of("id", "name"), s.getColumns());
-        assertEquals("id>=1", s.getConditions().get(0).toString());
+        assertEquals("id>=1", s.getWhere().toString());
     }
 
     @Test
