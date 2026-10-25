@@ -1,5 +1,7 @@
 # Java Database Engine
 
+[![CI](https://github.com/rzhnbkkz/database/actions/workflows/ci.yml/badge.svg)](https://github.com/rzhnbkkz/database/actions/workflows/ci.yml)
+
 A relational database engine built from scratch in Java, modeled after MySQL. Consists of a lexer, a recursive-descent parser, a query planner with sorted (B-tree style) indexes and an interactive prompt.
 
 It handles SQL including joins, subqueries (correlated as well), GROUP BY and HAVING, expressions and functions, and SQL's NULL logic.
@@ -24,6 +26,14 @@ Input a command or type EXIT to exit: SELECT id, name, city FROM users;
 - **Schema**: primary keys, `AUTO_INCREMENT`, `NOT NULL`, `DEFAULT`, and type checks before any row is read
 - **Persistence**: `SAVE` and `LOAD` tables as JSON
 - **Errors that point at the problem**: `Expected FROM, got 'users' at position 10`
+
+## Build and run
+Requires Java 17 or newer and Maven.
+```
+mvn test                       # run the tests
+mvn package                    # build target/database.jar
+java -jar target/database.jar  # start the REPL
+```
 
 ## Example session
 ```sql
