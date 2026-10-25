@@ -254,7 +254,7 @@ class OrderByLimitTest {
     @Test
     void explainLeavesOutClausesThatAreNotThere() {
         SelectStatement s = parse("SELECT * FROM users LIMIT 3");
-        assertEquals(List.of("users: full scan", "limit 3"), engine.explain(s.getQuery()));
+        assertEquals(List.of("users: full scan", "limit 3, stops reading early"), engine.explain(s.getQuery()));
         assertEquals(List.of("users: full scan"), engine.explain(parse("SELECT * FROM users").getQuery()));
     }
 }

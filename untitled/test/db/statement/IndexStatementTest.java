@@ -76,8 +76,9 @@ class IndexStatementTest {
     void parsesIndexCommands() {
         CreateIndexStatement create = assertInstanceOf(CreateIndexStatement.class,
                 Parser.parse("create index idx_user on orders (user_id);"));
-        assertEquals(List.of("idx_user", "orders", "user_id"),
-                List.of(create.getIndexName(), create.getTableName(), create.getColumn()));
+        assertEquals(List.of("idx_user", "orders"), List.of(create.getIndexName(), create.getTableName()));
+        assertEquals(List.of("user_id"), create.getColumns());
+        assertFalse(create.isUnique());
         DropIndexStatement drop = assertInstanceOf(DropIndexStatement.class, Parser.parse("DROP INDEX idx_user ON orders"));
         assertEquals(List.of("idx_user", "orders"), List.of(drop.getIndexName(), drop.getTableName()));
         assertEquals("orders", assertInstanceOf(ShowIndexStatement.class, Parser.parse("SHOW INDEX FROM orders")).getTableName());
@@ -89,22 +90,20 @@ class IndexStatementTest {
     void rejectsMalformedIndexCommands() {
         String[] bad = {
                 "CREATE INDEX ON orders (user_id)", "CREATE INDEX i orders (user_id)", "CREATE INDEX i ON orders",
-                "CREATE INDEX i ON orders ()", "CREATE INDEX i ON orders (user_id", "CREATE INDEX i ON orders (a, b)",
+                "CREATE INDEX i ON orders ()", "CREATE INDEX i ON orders (user_id", "CREATE INDEX i ON orders (a,)",
                 "CREATE users (id INTEGER)", "DROP INDEX i", "DROP INDEX ON orders", "DROP TABLE orders",
                 "SHOW INDEX orders", "SHOW TABLES", "EXPLAIN", "EXPLAIN DELETE FROM orders",
         };
         for (String sql : bad) {
             assertThrows(IllegalArgumentException.class, () -> Parser.parse(sql), sql);
         }
-        assertEquals("An index can only cover one column",
-                assertThrows(IllegalArgumentException.class, () -> Parser.parse("CREATE INDEX i ON orders (a, b)")).getMessage());
     }
 
     @Test
     void indexWordsAreNotReserved() {
         run("CREATE TABLE t (`index` INTEGER, show INTEGER, explain INTEGER, drop INTEGER)");
         run("CREATE INDEX index ON t (show)");
-        assertEquals("[{name=index, column=show}]", print("SHOW INDEX FROM t"));
+        assertEquals("[{name=index, columns=show, unique=false}]", print("SHOW INDEX FROM t"));
     }
 
     // Running them
@@ -112,9 +111,9 @@ class IndexStatementTest {
     @Test
     void createShowAndDrop() {
         assertEquals("Index 'idx_user' created on orders (user_id)", print("CREATE INDEX idx_user ON orders (user_id)"));
-        assertEquals("[{name=PRIMARY, column=id}, {name=idx_user, column=user_id}]", print("SHOW INDEX FROM orders"));
+        assertEquals("[{name=PRIMARY, columns=id, unique=true}, {name=idx_user, columns=user_id, unique=false}]", print("SHOW INDEX FROM orders"));
         assertEquals("Index 'idx_user' dropped", print("DROP INDEX idx_user ON orders"));
-        assertEquals("[{name=PRIMARY, column=id}]", print("SHOW INDEX FROM orders"));
+        assertEquals("[{name=PRIMARY, columns=id, unique=true}]", print("SHOW INDEX FROM orders"));
     }
 
     @Test

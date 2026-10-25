@@ -2,15 +2,19 @@ package db.statement;
 
 import db.query.QueryEngine;
 
+import java.util.List;
+
 public class CreateIndexStatement implements Statement {
     private String indexName;
     private String tableName;
-    private String column;
+    private List<String> columns;
+    private boolean unique;
 
-    public CreateIndexStatement(String indexName, String tableName, String column) {
+    public CreateIndexStatement(String indexName, String tableName, List<String> columns, boolean unique) {
         this.indexName = indexName;
         this.tableName = tableName;
-        this.column = column;
+        this.columns = columns;
+        this.unique = unique;
     }
 
     public String getIndexName() {
@@ -21,12 +25,17 @@ public class CreateIndexStatement implements Statement {
         return tableName;
     }
 
-    public String getColumn() {
-        return column;
+    public List<String> getColumns() {
+        return columns;
+    }
+
+    public boolean isUnique() {
+        return unique;
     }
 
     public void execute(QueryEngine query) {
-        query.requireTable(tableName).createIndex(indexName, column);
-        System.out.println("Index '" + indexName + "' created on " + tableName + " (" + column + ")");
+        query.requireTable(tableName).createIndex(indexName, columns, unique);
+        System.out.println((unique ? "Unique index '" : "Index '") + indexName + "' created on " + tableName
+                + " (" + String.join(", ", columns) + ")");
     }
 }

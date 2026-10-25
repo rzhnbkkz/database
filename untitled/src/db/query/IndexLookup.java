@@ -7,67 +7,79 @@ import db.model.Table;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
 
-// Reading a table through an index instead of scanning it: the rows whose indexed column equals a value,
-// or lies in a range (age >= 18 AND age < 30). Each end of the range is a literal, or a column of a table
-// read earlier in the join (u.id in o.user_id = u.id). low or high is null when that end is open.
-public record IndexLookup(Index index, List<Condition> conditions, Bound low, Bound high) {
+// Reading a table through an index instead of scanning it. Like MySQL, an index is used from its first
+// column on: equal values for some leading columns (prefix), then optionally a range on the next one.
+// With (city, age): city = 'Oslo' AND age > 30 uses both, age > 30 alone uses neither. Each value is a
+// literal, or a column of a table read earlier in the join (u.id in o.user_id = u.id).
+public record IndexLookup(Index index, List<Condition> conditions, List<Object> prefix, boolean ranged, Bound low, Bound high) {
 
+    // One end of the range on the column after the prefix; null when that end is open
     public record Bound(Object value, boolean inclusive) {
-        Object valueFor(Row left) {
-            return value instanceof ColumnRef ref ? left.get(ref.key()) : value;
-        }
     }
 
-    // A condition the index can answer, turned around if needed so the indexed column is on the left
-    private record Usable(Condition condition, Index index, Condition.Operator operator, Object other) {}
+    // A condition an index could answer, turned around if needed so this table's column is on the left
+    private record Usable(Condition condition, String column, Condition.Operator operator, Object other) {}
 
-    // Picks how to read the table: an equality if there is one, since it narrows the most, otherwise
-    // a range on one index, with both ends when the conditions give them. Only conditions on their own
-    // or inside AND count (under OR or NOT, an index can't rule rows out). alias is how the table's
-    // columns are named in the expression; earlier holds the aliases of tables whose values are known
-    // when this table is read. null if no index helps.
+    // Picks the index that narrows the most: a unique index with every column matched by =, then the most
+    // leading columns matched by =, then a range with both ends over one with a single end. Earlier indexes
+    // (PRIMARY first) win ties. Only conditions on their own or inside AND count (under OR or NOT, an index
+    // can't rule rows out). alias is how the table's columns are named in the expression; earlier holds the
+    // aliases of tables whose values are known when this table is read. null if no index helps.
     public static IndexLookup find(Table table, String alias, boolean qualified, Expression expression, Set<String> earlier) {
         List<Usable> usable = new ArrayList<>();
-        collect(table, alias, qualified, expression, earlier, usable);
-        for (Usable u : usable) {
-            if (u.operator() == Condition.Operator.EQUALS) {
-                Bound exact = new Bound(u.other(), true);
-                return new IndexLookup(u.index(), List.of(u.condition()), exact, exact);
-            }
-        }
+        collect(alias, qualified, expression, earlier, usable);
         IndexLookup best = null;
-        for (Usable start : usable) {
-            Bound low = null, high = null;
+        int bestScore = 0;
+        for (Index index : table.getIndexes()) {
+            List<Object> prefix = new ArrayList<>();
             List<Condition> used = new ArrayList<>();
-            // Any further bounds on the same column are still checked by WHERE or ON afterwards
-            for (Usable u : usable) {
-                if (u.index() != start.index()) continue;
-                boolean lower = u.operator() == Condition.Operator.GREATER || u.operator() == Condition.Operator.GREATER_OR_EQUAL;
-                boolean inclusive = u.operator() == Condition.Operator.GREATER_OR_EQUAL || u.operator() == Condition.Operator.LESS_OR_EQUAL;
-                if (lower && low == null) {
-                    low = new Bound(u.other(), inclusive);
-                    used.add(u.condition());
-                } else if (!lower && high == null) {
-                    high = new Bound(u.other(), inclusive);
-                    used.add(u.condition());
+            int matched = 0;
+            for (String column : index.getColumns()) {
+                Usable equal = usable.stream()
+                        .filter(u -> u.column().equals(column) && u.operator() == Condition.Operator.EQUALS)
+                        .findFirst().orElse(null);
+                if (equal == null) break;
+                prefix.add(equal.other());
+                used.add(equal.condition());
+                matched++;
+            }
+            Bound low = null, high = null;
+            if (matched < index.getColumns().size()) {
+                String next = index.getColumns().get(matched);
+                // Any further bounds on the column are still checked by WHERE or ON afterwards
+                for (Usable u : usable) {
+                    if (!u.column().equals(next) || u.operator() == Condition.Operator.EQUALS) continue;
+                    boolean lower = u.operator() == Condition.Operator.GREATER || u.operator() == Condition.Operator.GREATER_OR_EQUAL;
+                    boolean inclusive = u.operator() == Condition.Operator.GREATER_OR_EQUAL || u.operator() == Condition.Operator.LESS_OR_EQUAL;
+                    if (lower && low == null) {
+                        low = new Bound(u.other(), inclusive);
+                        used.add(u.condition());
+                    } else if (!lower && high == null) {
+                        high = new Bound(u.other(), inclusive);
+                        used.add(u.condition());
+                    }
                 }
             }
-            boolean closed = low != null && high != null;
-            if (best == null || (closed && (best.low() == null || best.high() == null))) {
-                best = new IndexLookup(start.index(), used, low, high);
+            boolean ranged = low != null || high != null;
+            if (matched == 0 && !ranged) continue;
+            boolean exactUnique = index.isUnique() && matched == index.getColumns().size();
+            int score = exactUnique ? 1_000_000 : matched * 10 + (low != null ? 1 : 0) + (high != null ? 1 : 0);
+            if (score > bestScore) {
+                bestScore = score;
+                best = new IndexLookup(index, used, prefix, ranged, low, high);
             }
         }
         return best;
     }
 
-    private static void collect(Table table, String alias, boolean qualified, Expression expression, Set<String> earlier,
-                                List<Usable> usable) {
+    private static void collect(String alias, boolean qualified, Expression expression, Set<String> earlier, List<Usable> usable) {
         if (expression instanceof And and) {
-            for (Expression part : and.parts()) collect(table, alias, qualified, part, earlier, usable);
+            for (Expression part : and.parts()) collect(alias, qualified, part, earlier, usable);
             return;
         }
         // Aggregates only appear in HAVING, which runs after the rows are read
@@ -76,26 +88,24 @@ public record IndexLookup(Index index, List<Condition> conditions, Bound low, Bo
             return;
         }
         // Either side may be this table's column: u.id < o.total is read as o.total > u.id
-        Usable u = usable(table, alias, qualified, condition, left, condition.getOperator(), condition.getValue(), earlier);
+        Usable u = usable(alias, qualified, condition, left, condition.getOperator(), condition.getValue(), earlier);
         if (u == null && condition.getValue() instanceof ColumnRef right) {
-            u = usable(table, alias, qualified, condition, right, flip(condition.getOperator()), left, earlier);
+            u = usable(alias, qualified, condition, right, flip(condition.getOperator()), left, earlier);
         }
         if (u != null) usable.add(u);
     }
 
-    private static Usable usable(Table table, String alias, boolean qualified, Condition condition,
-                                 ColumnRef column, Condition.Operator operator, Object other, Set<String> earlier) {
+    private static Usable usable(String alias, boolean qualified, Condition condition, ColumnRef column,
+                                 Condition.Operator operator, Object other, Set<String> earlier) {
         boolean ours = qualified ? alias.equals(column.table()) : column.table() == null;
         if (!ours) return null;
-        Index index = table.getIndexOn(column.column());
-        if (index == null) return null;
         if (other instanceof ColumnRef ref) {
             // Comparing with this table's own column (id = manager_id) needs every row anyway
             if (ref.table() == null || !earlier.contains(ref.table())) return null;
         } else if (other == null) {
             return null;
         }
-        return new Usable(condition, index, operator, other);
+        return new Usable(condition, column.column(), operator, other);
     }
 
     private static Condition.Operator flip(Condition.Operator operator) {
@@ -108,13 +118,35 @@ public record IndexLookup(Index index, List<Condition> conditions, Bound low, Bo
         };
     }
 
-    // Ids of the matching rows; left is the combined row so far, for values from earlier tables
+    // Ids of the matching rows in table order; left is the combined row so far, for values from earlier tables
     public Collection<Long> ids(Row left) {
-        Object lowValue = low == null ? null : low.valueFor(left);
-        Object highValue = high == null ? null : high.valueFor(left);
-        // Comparing with an empty cell matches nothing
-        if ((low != null && lowValue == null) || (high != null && highValue == null)) return Collections.emptySortedSet();
-        return index.range(lowValue, low == null || low.inclusive(), highValue, high == null || high.inclusive());
+        Index.Slice slice = slice(left);
+        return slice == null ? Collections.emptySortedSet() : index.ids(slice);
+    }
+
+    // The same ids in index order, for an ORDER BY that this index already sorts
+    public Iterator<Long> inOrder(Row left, boolean descending) {
+        Index.Slice slice = slice(left);
+        return slice == null ? Collections.emptyIterator() : index.inOrder(slice, descending);
+    }
+
+    // null when a value is empty: comparing with an empty cell matches nothing
+    private Index.Slice slice(Row left) {
+        List<Object> values = new ArrayList<>();
+        for (Object value : prefix) {
+            Object resolved = valueFor(value, left);
+            if (resolved == null) return null;
+            values.add(resolved);
+        }
+        if (!ranged) return Index.Slice.equal(values);
+        Object lowValue = low == null ? null : valueFor(low.value(), left);
+        Object highValue = high == null ? null : valueFor(high.value(), left);
+        if ((low != null && lowValue == null) || (high != null && highValue == null)) return null;
+        return Index.Slice.range(values, lowValue, low != null && low.inclusive(), highValue, high != null && high.inclusive());
+    }
+
+    private static Object valueFor(Object value, Row left) {
+        return value instanceof ColumnRef ref ? left.get(ref.key()) : value;
     }
 
     @Override

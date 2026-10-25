@@ -13,9 +13,10 @@ import java.util.*;
 
 /**
  * Reads tables in the JSON format written by {@link TableSerializer}:
- * {"name": ..., "columns": [{"name": ..., "type": ...}], "indexes": [{"name": ..., "column": ...}],
+ * {"name": ..., "columns": [{"name": ..., "type": ...}], "indexes": [{"name": ..., "columns": [...], "unique": true}],
  *  "rows": [{col: value, ...}]}
- * "indexes" and "rows" may be left out.
+ * "indexes" and "rows" may be left out, and so may an index's "unique". Files from before multi-column
+ * indexes, with "column": "name" instead of "columns", still load.
  */
 public class TableDeserializer {
 
@@ -47,8 +48,15 @@ public class TableDeserializer {
         if (indexesValue != null) {
             for (Object item : asArray(indexesValue, "indexes")) {
                 Map<String, Object> indexObj = asObject(item, "index");
-                table.createIndex(asString(require(indexObj, "name"), "index name"),
-                        asString(require(indexObj, "column"), "index column"));
+                List<String> indexColumns = new ArrayList<>();
+                if (indexObj.containsKey("columns")) {
+                    for (Object column : asArray(indexObj.get("columns"), "index columns")) indexColumns.add(asString(column, "index column"));
+                } else {
+                    indexColumns.add(asString(require(indexObj, "column"), "index column"));
+                }
+                Object unique = indexObj.getOrDefault("unique", false);
+                if (!(unique instanceof Boolean)) throw new IllegalArgumentException("Expected unique to be true or false");
+                table.createIndex(asString(require(indexObj, "name"), "index name"), indexColumns, (Boolean) unique);
             }
         }
 

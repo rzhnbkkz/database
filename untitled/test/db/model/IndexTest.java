@@ -30,7 +30,7 @@ class IndexTest {
     @Test
     void primaryKeyGetsAnIndex() {
         assertEquals(List.of("PRIMARY"), users.getIndexes().stream().map(Index::getName).toList());
-        assertEquals("id", users.getIndexOn("id").getColumn());
+        assertEquals(List.of("id"), users.getIndexOn("id").getColumns());
         assertEquals(List.of(2), idsWhere("id", 2));
     }
 
@@ -132,9 +132,9 @@ class IndexTest {
         users.createIndex("idx_name", "name");
         assertEquals("Index 'idx_name' already exists on table 'users'",
                 assertThrows(IllegalArgumentException.class, () -> users.createIndex("idx_name", "score")).getMessage());
-        assertEquals("Column 'name' already has index 'idx_name'",
+        assertEquals("Index 'idx_name' already covers (name)",
                 assertThrows(IllegalArgumentException.class, () -> users.createIndex("other", "name")).getMessage());
-        assertEquals("Column 'id' already has index 'PRIMARY'",
+        assertEquals("Index 'PRIMARY' already covers (id)",
                 assertThrows(IllegalArgumentException.class, () -> users.createIndex("other", "id")).getMessage());
         assertEquals("Unknown column 'age'",
                 assertThrows(IllegalArgumentException.class, () -> users.createIndex("other", "age")).getMessage());

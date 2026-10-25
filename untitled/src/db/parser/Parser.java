@@ -49,7 +49,7 @@ import java.util.*;
 //   delete    := DELETE FROM name [where]
 //   create    := CREATE TABLE name '(' columnDef {',' columnDef} ')'
 //   columnDef := name type ['(' NUMBER ')'] [PRIMARY KEY]
-//   createIdx := CREATE INDEX name ON name '(' name ')'
+//   createIdx := CREATE [UNIQUE] INDEX name ON name '(' name {',' name} ')'
 //   dropIdx   := DROP INDEX name ON name
 //   showIdx   := SHOW (INDEX | INDEXES) FROM name
 //   explain   := EXPLAIN select
@@ -273,8 +273,12 @@ public class Parser {
 
     private Statement parseCreate() {
         expectKeyword("CREATE");
-        if (acceptWord("INDEX")) return parseCreateIndex();
-        if (!acceptKeyword("TABLE")) throw expected("TABLE or INDEX");
+        if (acceptWord("INDEX")) return parseCreateIndex(false);
+        if (acceptWord("UNIQUE")) {
+            if (!acceptWord("INDEX")) throw expected("INDEX");
+            return parseCreateIndex(true);
+        }
+        if (!acceptKeyword("TABLE")) throw expected("TABLE, INDEX or UNIQUE INDEX");
         String table = expectName("table name");
         expectSymbol("(");
         List<Column> columns = new ArrayList<>();
@@ -294,16 +298,15 @@ public class Parser {
         return new CreateStatement(table, columns);
     }
 
-    // After CREATE INDEX
-    private Statement parseCreateIndex() {
+    // After CREATE [UNIQUE] INDEX
+    private Statement parseCreateIndex(boolean unique) {
         String name = expectName("index name");
         expectKeyword("ON");
         String table = expectName("table name");
         expectSymbol("(");
-        String column = expectName("column name");
-        if (peek().isSymbol(",")) throw new IllegalArgumentException("An index can only cover one column");
+        List<String> columns = parseNameList("column name");
         expectSymbol(")");
-        return new CreateIndexStatement(name, table, column);
+        return new CreateIndexStatement(name, table, columns, unique);
     }
 
     private Statement parseDropIndex() {

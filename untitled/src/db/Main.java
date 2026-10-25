@@ -14,7 +14,7 @@ public class Main {
                     [GROUP BY <column>, ...] [HAVING <condition>] [ORDER BY <column> [ASC | DESC], ...] [LIMIT <count> [OFFSET <count>]]
                   UPDATE <table> SET <column> = <value>, ... [WHERE ...]
                   DELETE FROM <table> [WHERE ...]
-                  CREATE INDEX <name> ON <table> (<column>)
+                  CREATE [UNIQUE] INDEX <name> ON <table> (<column>, ...)
                   DROP INDEX <name> ON <table>
                   SHOW INDEX FROM <table>
                   EXPLAIN SELECT ...                shows which indexes a query uses

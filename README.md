@@ -19,7 +19,8 @@ A relational database engine built from scratch in Java, modeled after MySQL.
 - ORDER BY on one or more columns, ASC or DESC, including columns that aren't selected; LIMIT with OFFSET (or MySQL's `LIMIT offset, count`)
 - Aggregates `COUNT(*)`, `COUNT(column)`, `SUM`, `AVG`, `MIN`, `MAX` with `GROUP BY` on one or more columns; ORDER BY can sort by an aggregate
 - HAVING to filter groups, comparing aggregates and GROUP BY columns with values or each other (`HAVING MAX(age) > AVG(age)`)
-- Indexes: `CREATE INDEX`, `DROP INDEX`, `SHOW INDEX`, plus an automatic `PRIMARY` index on the primary key. They are sorted, like MySQL's default B-tree indexes, so they speed up both `column = value` and ranges (`<`, `<=`, `>`, `>=`, and two ends combined like `age >= 18 AND age < 30`) in WHERE (SELECT, UPDATE, DELETE) and on the joined table's side of ON (`ON a.x = b.y`, `ON o.total > u.min_total`)
+- Indexes: `CREATE [UNIQUE] INDEX` on one or more columns, `DROP INDEX`, `SHOW INDEX`, plus an automatic `PRIMARY` index on the primary key. They are sorted, like MySQL's default B-tree indexes, so they speed up both `column = value` and ranges (`<`, `<=`, `>`, `>=`, and two ends combined like `age >= 18 AND age < 30`) in WHERE (SELECT, UPDATE, DELETE) and on the joined table's side of ON (`ON a.x = b.y`, `ON o.total > u.min_total`). An ORDER BY that matches an index is read in index order instead of being sorted, and LIMIT then stops reading early
+- UNIQUE indexes reject duplicate values on INSERT and UPDATE (several empty cells are fine, as in MySQL)
 - `EXPLAIN SELECT ...` shows, per table, whether it is read with an index or a full scan
 - Saving tables to JSON files and loading them back (SAVE / LOAD), including their indexes
 
@@ -40,6 +41,10 @@ SELECT u.name, COUNT(o.id), SUM(o.total) FROM users u LEFT JOIN orders o ON u.id
 UPDATE users SET active = TRUE, name = 'Bobby' WHERE name = 'Bob';
 DELETE FROM users WHERE id = 2;
 CREATE INDEX idx_user ON orders (user_id);
+CREATE UNIQUE INDEX idx_name ON users (name);
+CREATE INDEX idx_user_total ON orders (user_id, total);
+SELECT * FROM orders WHERE user_id = 1 AND total > 5;
+SELECT * FROM orders ORDER BY user_id, total LIMIT 10;
 EXPLAIN SELECT u.name, o.total FROM users u JOIN orders o ON u.id = o.user_id;
 SHOW INDEX FROM orders;
 SAVE users 'users.json';
@@ -54,14 +59,14 @@ Aggregates follow SQL: empty cells are skipped (`COUNT(age)` counts only rows th
 
 Joins are nested loops: without an index each row is compared with every row of the joined table, with an index on the joined column only the matching rows are looked up.
 
-Indexes cover one column and help `=` and ranges, but not `!=`, OR or NOT (those fall back to a full scan). When several conditions could use an index, `=` wins since it narrows the most, then a range with both ends; any other conditions are still checked on the rows found. Rows found through an index come back in table order, so an index never changes a result. In a join, the first table can use an index from WHERE and each joined table one from its ON; WHERE conditions on joined tables are not used for lookups. On 3,000 users × 3,000 orders, `JOIN orders o ON u.id = o.user_id` went from about 4.9 s to 7 ms with an index on `orders(user_id)`, and on 100,000 rows `WHERE age >= 50000 AND age < 50100` went from 11 ms to 0.1 ms with an index on `age`.
+Indexes help `=` and ranges, but not `!=`, OR or NOT (those fall back to a full scan). A multi-column index is used from its first column on, like in MySQL: `=` on some leading columns, then optionally a range on the next one, so `(user_id, total)` helps `user_id = 1 AND total > 5` and `user_id = 1`, but not `total > 5` alone. The planner picks the index that narrows the most: a UNIQUE index with every column matched by `=`, then the most columns matched by `=`, then a range with both ends; any other conditions are still checked on the rows found. ORDER BY is read from an index when its columns are exactly that index's columns, all from the first table and all ASC or all DESC (and there is no GROUP BY); the index must match exactly, since extra columns would order rows that tie differently from a sort. With LIMIT and nothing left to sort, a query stops reading as soon as it has enough rows; EXPLAIN shows this as `stops reading early`. Rows found through an index come back in table order, so an index never changes a result. In a join, the first table can use an index from WHERE and each joined table one from its ON; WHERE conditions on joined tables are not used for lookups. On 3,000 users × 3,000 orders, `JOIN orders o ON u.id = o.user_id` went from about 4.9 s to 7 ms with an index on `orders(user_id)`, and on 100,000 rows `WHERE age >= 50000 AND age < 50100` went from 11 ms to 0.1 ms with an index on `age`, and `ORDER BY age DESC LIMIT 10` from 98 ms to 0.07 ms.
 
 ## Project Structure
 ```
 untitled/
 ├── src/db/
 │   ├── Main.java      entry point
-│   ├── model/         Table, Row, Column, DataType, Index (sorted index on one column)
+│   ├── model/         Table, Row, Column, DataType, Index (sorted index on one or more columns)
 │   ├── query/         QueryEngine (incl. joins); WHERE/ON as an Expression tree: Condition, And, Or, Not;
 │   │                  SelectQuery, Scope (name resolution), ColumnRef, Aggregate, TableRef, Join, OrderBy,
 │   │                  IndexLookup (index choice)
@@ -74,5 +79,5 @@ untitled/
 ```
 
 ## Roadmap
-- ORDER BY read from an index instead of sorting
-- UNIQUE and multi-column indexes
+- DROP TABLE and ALTER TABLE
+- Subqueries

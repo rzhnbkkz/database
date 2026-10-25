@@ -1,5 +1,6 @@
 package db.query;
 
+import db.model.Index;
 import db.model.Row;
 import db.model.Table;
 
@@ -64,22 +65,48 @@ public class QueryEngine {
         return result;
     }
 
-    // How one table of a SELECT is read: through an index, or a full scan when lookup is null
-    private record Access(TableRef ref, Table table, IndexLookup lookup) {
+    // How one table of a SELECT is read: through an index, or a full scan when lookup is null. For the first
+    // table, ordered names an index whose order is the ORDER BY, so its rows are read in that order.
+    private record Access(TableRef ref, Table table, IndexLookup lookup, Index ordered, boolean descending) {
+        Access(TableRef ref, Table table, IndexLookup lookup) {
+            this(ref, table, lookup, null, false);
+        }
+
         // Rows to try, before WHERE or ON; left is the combined row so far (empty for the first table)
         List<Row> rows(Row left) {
             return lookup == null ? table.getRows() : table.getRows(lookup.ids(left));
         }
 
+        // The first table's rows, one at a time so a LIMIT can stop early
+        Iterator<Row> read() {
+            if (ordered == null) return rows(new Row(Map.of())).iterator();
+            Iterator<Long> ids = lookup != null ? lookup.inOrder(new Row(Map.of()), descending)
+                    : ordered.inOrder(Index.Slice.ALL, descending);
+            return new Iterator<>() {
+                public boolean hasNext() {
+                    return ids.hasNext();
+                }
+
+                public Row next() {
+                    return table.getRow(ids.next());
+                }
+            };
+        }
+
         String describe(boolean first) {
-            String how = lookup == null ? "full scan" : lookup.toString();
+            String how = lookup != null ? lookup.toString()
+                    : ordered != null ? "index " + ordered.getName() + " (all rows)" : "full scan";
+            if (ordered != null) how += descending ? ", in reverse index order" : ", in index order";
             return ref + ": " + how + (first ? "" : " for each row so far");
         }
     }
 
     // Everything a SELECT needs, with names checked and indexes chosen, before touching any rows.
     // grouped is true with GROUP BY or any aggregate. aggregates are keyed by the row key their result gets.
-    private record Plan(Scope scope, List<Access> accesses, List<Expression> conditions, Expression filter,
+    // orderedByIndex means the rows already come in ORDER BY order, so no sort is needed. stopAt is how many
+    // matching rows are enough (OFFSET + LIMIT) when no later step needs to see them all, otherwise -1.
+    private record Plan(Scope scope, List<Access> accesses, boolean orderedByIndex, long stopAt,
+                        List<Expression> conditions, Expression filter,
                         boolean grouped, List<ColumnRef> groupBy, Expression having, Map<String, Aggregate> aggregates,
                         List<OrderBy> order, Map<String, String> output) {}
 
@@ -145,7 +172,13 @@ public class QueryEngine {
         // The first table can use WHERE: its columns are never emptied by a LEFT JOIN, so a row
         // that fails a WHERE condition on them can't appear in the result
         List<Access> accesses = new ArrayList<>();
-        accesses.add(new Access(from, first, IndexLookup.find(first, from.alias(), scope.isQualified(), filter, Set.of())));
+        IndexLookup firstLookup = IndexLookup.find(first, from.alias(), scope.isQualified(), filter, Set.of());
+        Index ordered = grouped ? null : orderingIndex(first, from.alias(), scope.isQualified(), order);
+        // Reading in index order replaces a full scan, or a lookup on that same index; a lookup on another
+        // index usually finds fewer rows, so then it's cheaper to keep it and sort what it finds
+        if (ordered != null && firstLookup != null && firstLookup.index() != ordered) ordered = null;
+        boolean descending = ordered != null && order.get(0).descending();
+        accesses.add(new Access(from, first, firstLookup, ordered, descending));
         Set<String> earlier = new HashSet<>(Set.of(from.alias()));
         for (int i = 0; i < joins.size(); i++) {
             TableRef ref = joins.get(i).table();
@@ -153,7 +186,31 @@ public class QueryEngine {
                     IndexLookup.find(tables.get(i + 1), ref.alias(), true, conditions.get(i), earlier)));
             earlier.add(ref.alias());
         }
-        return new Plan(scope, accesses, conditions, filter, grouped, groupBy, having, aggregates, order, output);
+        boolean orderedByIndex = ordered != null;
+        // Rows come out of the joins in the first table's order, so once enough of them match, nothing
+        // later can change which ones are kept
+        long stopAt = !grouped && query.limit() != null && (order.isEmpty() || orderedByIndex)
+                ? (long) query.offset() + query.limit() : -1;
+        return new Plan(scope, accesses, orderedByIndex, stopAt, conditions, filter, grouped, groupBy, having, aggregates,
+                order, output);
+    }
+
+    // An index on the first table whose columns are exactly the ORDER BY columns, all ASC or all DESC.
+    // It must match exactly: with extra columns, rows that tie on ORDER BY would come out sorted by the
+    // extra column instead of keeping table order. null if there is none.
+    private static Index orderingIndex(Table table, String alias, boolean qualified, List<OrderBy> order) {
+        if (order.isEmpty()) return null;
+        List<String> columns = new ArrayList<>();
+        for (OrderBy item : order) {
+            if (!(item.item() instanceof ColumnRef column) || item.descending() != order.get(0).descending()) return null;
+            boolean ours = qualified ? alias.equals(column.table()) : column.table() == null;
+            if (!ours) return null;
+            columns.add(column.column());
+        }
+        for (Index index : table.getIndexes()) {
+            if (index.getColumns().equals(columns)) return index;
+        }
+        return null;
     }
 
     private static IllegalArgumentException notGrouped(String column) {
@@ -166,23 +223,24 @@ public class QueryEngine {
     // can use a column that isn't selected.
     public List<Row> select(SelectQuery query) {
         Plan plan = plan(query);
-        Access first = plan.accesses().get(0);
-        List<Row> rows = new ArrayList<>();
-        for (Row row : first.rows(new Row(Map.of()))) rows.add(withAlias(row, query.from().alias(), plan.scope()));
-        for (int i = 0; i < query.joins().size(); i++) {
-            rows = join(rows, plan.accesses().get(i + 1), query.joins().get(i), plan.conditions().get(i), plan.scope());
-        }
-
+        // One first-table row at a time through the joins and WHERE, so a LIMIT can stop the reading early
         List<Row> matching = new ArrayList<>();
-        for (Row row : rows) {
-            if (plan.filter().matches(row)) matching.add(row);
+        Iterator<Row> firstRows = plan.accesses().get(0).read();
+        while (firstRows.hasNext() && (plan.stopAt() < 0 || matching.size() < plan.stopAt())) {
+            List<Row> rows = List.of(withAlias(firstRows.next(), query.from().alias(), plan.scope()));
+            for (int i = 0; i < query.joins().size(); i++) {
+                rows = join(rows, plan.accesses().get(i + 1), query.joins().get(i), plan.conditions().get(i), plan.scope());
+            }
+            for (Row row : rows) {
+                if (plan.filter().matches(row)) matching.add(row);
+            }
         }
         if (plan.grouped()) {
             matching = group(matching, plan);
             matching.removeIf(row -> !plan.having().matches(row));
         }
         // List.sort is stable, so rows that tie keep their table order
-        if (!plan.order().isEmpty()) matching.sort(comparator(plan.order()));
+        if (!plan.order().isEmpty() && !plan.orderedByIndex()) matching.sort(comparator(plan.order()));
         int start = Math.min(query.offset(), matching.size());
         int end = query.limit() == null ? matching.size() : (int) Math.min(matching.size(), (long) start + query.limit());
 
@@ -244,13 +302,13 @@ public class QueryEngine {
             lines.add("aggregate all rows into one");
         }
         if (plan.having() != Expression.ALL_ROWS) lines.add("having " + plan.having());
-        if (!plan.order().isEmpty()) {
+        if (!plan.order().isEmpty() && !plan.orderedByIndex()) {
             lines.add("sort by " + plan.order().stream().map(OrderBy::toString).collect(Collectors.joining(", ")));
         }
         List<String> cut = new ArrayList<>();
         if (query.limit() != null) cut.add("limit " + query.limit());
         if (query.offset() > 0) cut.add("offset " + query.offset());
-        if (!cut.isEmpty()) lines.add(String.join(" ", cut));
+        if (!cut.isEmpty()) lines.add(String.join(" ", cut) + (plan.stopAt() >= 0 ? ", stops reading early" : ""));
         return lines;
     }
 

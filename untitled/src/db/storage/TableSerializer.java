@@ -6,6 +6,7 @@ import db.model.Row;
 import db.model.Table;
 
 import java.util.*;
+import java.util.stream.Collectors;
 import java.io.FileWriter;
 import java.io.IOException;
 
@@ -34,8 +35,11 @@ public class TableSerializer {
             sb.append("  \"indexes\": [");
             for (int i = 0; i < indexes.size(); i++) {
                 sb.append(i == 0 ? "\n" : ",\n");
-                sb.append("    {\"name\": ").append(quote(indexes.get(i).getName()))
-                  .append(", \"column\": ").append(quote(indexes.get(i).getColumn())).append("}");
+                Index index = indexes.get(i);
+                sb.append("    {\"name\": ").append(quote(index.getName())).append(", \"columns\": [")
+                  .append(index.getColumns().stream().map(TableSerializer::quote).collect(Collectors.joining(", "))).append("]");
+                if (index.isUnique()) sb.append(", \"unique\": true");
+                sb.append("}");
             }
             sb.append("\n  ],\n");
         }
