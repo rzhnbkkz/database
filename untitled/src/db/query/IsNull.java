@@ -8,7 +8,7 @@ import java.util.List;
 public record IsNull(SelectItem item, boolean negated) implements Expression {
 
     public Boolean evaluate(Row row) {
-        return (row.get(item.key()) == null) != negated;
+        return (item.evaluate(row) == null) != negated;
     }
 
     public Expression resolve(Scope scope) {

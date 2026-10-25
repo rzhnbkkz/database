@@ -129,7 +129,7 @@ class ParserTest {
     void keywordNeedsBackticksToBeAName() {
         IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
                 () -> Parser.parse("SELECT from FROM users"));
-        assertEquals("Expected column name, got keyword 'FROM' at position 8 (use `from` to use it as a name)",
+        assertEquals("Expected a value, got keyword 'FROM' at position 8 (use `from` to use it as a name)",
                 e.getMessage());
 
         SelectStatement s = (SelectStatement) Parser.parse("SELECT `from`, `two words` FROM `select`");
@@ -166,7 +166,7 @@ class ParserTest {
     @Test
     void rejectsCommandWithoutArguments() {
         IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> Parser.parse("SELECT"));
-        assertEquals("Expected column name, got end of input", e.getMessage());
+        assertEquals("Expected a value, got end of input", e.getMessage());
     }
 
     @Test

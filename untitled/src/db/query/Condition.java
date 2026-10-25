@@ -63,8 +63,8 @@ public class Condition implements Expression {
     }
 
     public Boolean evaluate(Row row) {
-        Object cell = row.get(column.key());
-        Object other = value instanceof SelectItem item ? row.get(item.key()) : value;
+        Object cell = column.evaluate(row);
+        Object other = value instanceof SelectItem item ? item.evaluate(row) : value;
         // Like SQL NULL, comparing an empty cell is unknown, so it never matches, even with NOT
         if (cell == null || other == null) return null;
         Integer cmp = compare(cell, other);
@@ -109,8 +109,11 @@ public class Condition implements Expression {
         return 4;
     }
 
+    // Compact for plain columns and values (id>1), spaced when a side is an expression (price * 2 > 10)
     @Override
     public String toString() {
-        return column + operator.getSymbol() + value;
+        boolean simple = (column instanceof ColumnRef || column instanceof Aggregate)
+                && (!(value instanceof SelectItem) || value instanceof ColumnRef || value instanceof Aggregate);
+        return simple ? column + operator.getSymbol() + value : column + " " + operator.getSymbol() + " " + value;
     }
 }

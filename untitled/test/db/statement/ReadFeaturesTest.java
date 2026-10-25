@@ -138,9 +138,11 @@ class ReadFeaturesTest {
     @Test
     void parsesIn() {
         assertEquals("Expected a value, got ')' at position 34", parseFails("SELECT * FROM users WHERE id IN ()"));
-        for (String bad : new String[]{"id IN 1", "id IN (1", "id IN (1,)", "id IN (Bob)", "id NOT (1)", "id IN (1) (2)"}) {
+        for (String bad : new String[]{"id IN 1", "id IN (1", "id IN (1,)", "id NOT (1)", "id IN (1) (2)"}) {
             assertThrows(IllegalArgumentException.class, () -> Parser.parse("SELECT * FROM users WHERE " + bad), bad);
         }
+        // A bare word is read as a column, like on the right of =
+        assertEquals("Unknown column 'Bob' (to compare with text, put it in quotes: 'Bob')", fails("SELECT * FROM users WHERE name IN (Bob)"));
     }
 
     // BETWEEN

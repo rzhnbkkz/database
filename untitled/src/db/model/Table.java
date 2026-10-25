@@ -9,6 +9,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Function;
 import java.util.function.Predicate;
 
 public class Table {
@@ -134,39 +135,28 @@ public class Table {
         return update(null, filter, values);
     }
 
+    // The same values for every matching row. They're checked first, so a wrong SET fails even when no row matches.
     public int update(Collection<Long> candidates, Predicate<Row> filter, Map<String, Object> values) {
-        // SET x = DEFAULT is the column's default, or empty
-        Map<String, Object> resolved = new LinkedHashMap<>();
-        for (Map.Entry<String, Object> entry : values.entrySet()) {
-            Column column = column(entry.getKey());
-            resolved.put(entry.getKey(), entry.getValue() == DEFAULT ? (column == null ? null : column.getDefaultValue()) : entry.getValue());
-        }
-        // Existing cells are already valid, so checking the new values is enough
-        Row changes = normalize(resolved);
-        validate(changes, false);
+        Row changes = changes(values);
+        if (primaryKey != null && changes.getData().containsKey(primaryKey.getName())) requireKey(changes);
+        return update(candidates, filter, row -> values);
+    }
 
+    // Values worked out for each row from its current cells, like SET n = n + 1. Every new row is checked
+    // before anything changes, so a failed update leaves the table as it was.
+    public int update(Collection<Long> candidates, Predicate<Row> filter, Function<Row, Map<String, Object>> valuesFor) {
         List<Long> matches = matching(candidates, filter);
-
-        // Check the primary key before changing anything, so a failed update leaves the table as it was
-        if (primaryKey != null && changes.getData().containsKey(primaryKey.getName())) {
-            Object newKey = requireKey(changes);
-            if (matches.size() > 1) {
-                throw new IllegalArgumentException("Cannot set primary key '" + primaryKey.getName()
-                        + "' to the same value on " + matches.size() + " rows");
-            }
-            if (matches.size() == 1) {
-                for (long other : indexes.get(PRIMARY).lookup(newKey)) {
-                    if (other != matches.get(0)) throw duplicateKey(newKey);
-                }
-            }
-        }
-
         Map<Long, Row> updated = new LinkedHashMap<>();
+        boolean keyChanged = false;
         for (long id : matches) {
-            Map<String, Object> data = new LinkedHashMap<>(rows.get(id).getData());
+            Row old = rows.get(id);
+            Row changes = changes(valuesFor.apply(old));
+            keyChanged |= primaryKey != null && changes.getData().containsKey(primaryKey.getName());
+            Map<String, Object> data = new LinkedHashMap<>(old.getData());
             data.putAll(changes.getData());
             updated.put(id, withoutEmptyCells(normalize(data)));
         }
+        if (keyChanged) checkPrimaryKeys(updated);
         checkUnique(updated, false);
 
         for (Map.Entry<Long, Row> entry : updated.entrySet()) {
@@ -176,13 +166,44 @@ public class Table {
                 index.add(entry.getKey(), entry.getValue());
             }
             rows.put(entry.getKey(), entry.getValue());
-        }
-        // A key set by hand moves the AUTO_INCREMENT counter past it, so a later insert doesn't collide
-        if (primaryKey != null && primaryKey.isAutoIncrement() && !matches.isEmpty()
-                && changes.get(primaryKey.getName()) instanceof Integer key) {
-            nextAutoIncrement = Math.max(nextAutoIncrement, key + 1L);
+            // A key set by hand moves the AUTO_INCREMENT counter past it, so a later insert doesn't collide
+            if (keyChanged && primaryKey.isAutoIncrement()) {
+                nextAutoIncrement = Math.max(nextAutoIncrement, (Integer) entry.getValue().get(primaryKey.getName()) + 1L);
+            }
         }
         return matches.size();
+    }
+
+    // An UPDATE's SET values, with DEFAULT turned into the column's default (or empty), checked against the columns
+    private Row changes(Map<String, Object> values) {
+        Map<String, Object> resolved = new LinkedHashMap<>();
+        for (Map.Entry<String, Object> entry : values.entrySet()) {
+            Column column = column(entry.getKey());
+            resolved.put(entry.getKey(), entry.getValue() == DEFAULT ? (column == null ? null : column.getDefaultValue()) : entry.getValue());
+        }
+        // Existing cells are already valid, so checking the new values is enough
+        Row changes = normalize(resolved);
+        validate(changes, false);
+        return changes;
+    }
+
+    // The updated rows' keys must differ from each other and from the rows that keep theirs
+    private void checkPrimaryKeys(Map<Long, Row> updated) {
+        Map<Object, Long> newKeys = new HashMap<>();
+        Object repeated = null;
+        for (Map.Entry<Long, Row> entry : updated.entrySet()) {
+            Object key = requireKey(entry.getValue());
+            if (newKeys.put(key, entry.getKey()) != null && repeated == null) repeated = key;
+            for (long other : indexes.get(PRIMARY).lookup(key)) {
+                if (!updated.containsKey(other)) throw duplicateKey(key);
+            }
+        }
+        if (repeated == null) return;
+        if (newKeys.size() == 1) {
+            throw new IllegalArgumentException("Cannot set primary key '" + primaryKey.getName()
+                    + "' to the same value on " + updated.size() + " rows");
+        }
+        throw duplicateKey(repeated);
     }
 
     // UNIQUE indexes other than PRIMARY (whose checks above give their own messages): the new or changed
@@ -458,7 +479,13 @@ public class Table {
                 continue;
             }
             if (!fits(col, value)) {
-                throw new IllegalArgumentException("Column '" + col.getName() + "' expects " + col.getDataType());
+                String problem = "";
+                if (col.getDataType() == DataType.INTEGER && value instanceof Long) {
+                    problem = ", " + value + " is out of range";
+                } else if (col.getDataType() == DataType.INTEGER && value instanceof Float) {
+                    problem = ", got " + value + " (ROUND, FLOOR or CEIL give a whole number)";
+                }
+                throw new IllegalArgumentException("Column '" + col.getName() + "' expects " + col.getDataType() + problem);
             }
         }
     }

@@ -96,7 +96,7 @@ class WhereConditionTest {
     void andErrorNamesTheKeyword() {
         IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
                 () -> Parser.parse("SELECT * FROM users WHERE id = 1 AND"));
-        assertEquals("Expected column name, got end of input", e.getMessage());
+        assertEquals("Expected a value, got end of input", e.getMessage());
     }
 
     @Test

@@ -75,7 +75,7 @@ class AggregateTest {
     void parsesGroupByAndAggregateOrderBy() {
         SelectStatement s = parse("SELECT city, COUNT(*) FROM users WHERE age > 1 GROUP BY city, active "
                 + "ORDER BY COUNT(*) DESC, city LIMIT 2");
-        assertEquals(List.of("city", "active"), s.getGroupBy().stream().map(ColumnRef::toString).toList());
+        assertEquals(List.of("city", "active"), s.getGroupBy().stream().map(Object::toString).toList());
         assertEquals(List.of("COUNT(*) DESC", "city"), s.getOrderBy().stream().map(Object::toString).toList());
         assertEquals(2, s.getLimit());
     }
@@ -96,7 +96,8 @@ class AggregateTest {
 
     @Test
     void unknownFunctionsAreNamed() {
-        assertEquals("Unknown function MEDIAN, expected COUNT, SUM, AVG, MIN or MAX",
+        assertEquals("Unknown function MEDIAN, expected an aggregate (COUNT, SUM, AVG, MIN, MAX) or one of UPPER, LOWER, LENGTH, "
+                        + "TRIM, CONCAT, SUBSTRING, REPLACE, ABS, ROUND, FLOOR, CEIL, COALESCE, IFNULL, NULLIF",
                 assertThrows(IllegalArgumentException.class, () -> Parser.parse("SELECT MEDIAN(age) FROM users")).getMessage());
     }
 

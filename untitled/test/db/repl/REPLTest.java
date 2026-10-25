@@ -76,7 +76,7 @@ class REPLTest {
         String out = output.toString();
         assertTrue(out.contains("Command TRUNCATE is unrecognized"));
         assertTrue(out.contains("Column 'id' expects INTEGER"));
-        assertTrue(out.contains("Expected column name, got keyword 'FROM' at position 8"));
+        assertTrue(out.contains("Expected a value, got keyword 'FROM' at position 8"));
         assertTrue(out.contains("id=1") && out.contains("name=Alice"));
     }
 

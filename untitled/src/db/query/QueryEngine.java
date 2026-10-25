@@ -120,8 +120,8 @@ public class QueryEngine {
     // matching rows are enough (OFFSET + LIMIT) when no later step needs to see them all, otherwise -1.
     private record Plan(Scope scope, List<Access> accesses, boolean orderedByIndex, long stopAt,
                         List<Expression> conditions, Expression filter,
-                        boolean grouped, List<ColumnRef> groupBy, Expression having, Map<String, Aggregate> aggregates,
-                        List<OrderBy> order, Map<String, String> output) {}
+                        boolean grouped, List<SelectItem> groupBy, Expression having, Map<String, Aggregate> aggregates,
+                        List<OrderBy> order, Map<String, SelectItem> output) {}
 
     private Plan plan(SelectQuery query) {
         TableRef from = query.from();
@@ -138,59 +138,55 @@ public class QueryEngine {
             conditions.add(join.on().resolve(scope));
         }
         Expression filter = query.where().resolve(scope);
-        List<ColumnRef> groupBy = query.groupBy().stream().map(scope::resolve).toList();
+        List<SelectItem> groupBy = query.groupBy().stream().map(item -> item.resolve(scope)).toList();
         // Kept as ALL_ROWS when absent, so "is there a HAVING?" stays a simple check
         Expression having = query.having() == Expression.ALL_ROWS ? Expression.ALL_ROWS : query.having().resolve(scope);
         // ORDER BY may name any column of the tables, not only selected ones
         List<OrderBy> order = query.orderBy().stream().map(item -> item.resolve(scope)).toList();
 
-        Map<String, String> output = new LinkedHashMap<>(); // label -> row key
-        Map<String, Aggregate> aggregates = new LinkedHashMap<>();
+        Map<String, SelectItem> output = new LinkedHashMap<>(); // label -> what to show under it
         for (int i = 0; i < query.columns().size(); i++) {
             SelectItem item = query.columns().get(i);
+            if (item instanceof ColumnRef column && column.isStar()) {
+                for (ColumnRef ref : scope.columns(column.table())) output.put(ref.key(), ref);
+                continue;
+            }
             // Labeled with its alias, or as written
-            String label = query.aliases().get(i) != null ? query.aliases().get(i) : item.toString();
-            if (item instanceof Aggregate aggregate) {
-                Aggregate resolved = aggregate.resolve(scope);
-                aggregates.put(resolved.key(), resolved);
-                output.put(label, resolved.key());
-            } else if (((ColumnRef) item).isStar()) {
-                for (ColumnRef ref : scope.columns(((ColumnRef) item).table())) output.put(ref.key(), ref.key());
-            } else {
-                output.put(label, scope.resolve((ColumnRef) item).key());
+            output.put(query.aliases().get(i) != null ? query.aliases().get(i) : item.toString(), item.resolve(scope));
+        }
+        // Every aggregate the query uses, also only in HAVING or ORDER BY, is computed once per group
+        List<SelectItem> used = new ArrayList<>(output.values());
+        used.addAll(having.items());
+        for (OrderBy item : order) used.add(item.item());
+        Map<String, Aggregate> aggregates = new LinkedHashMap<>();
+        for (SelectItem item : used) {
+            for (SelectItem leaf : SelectItem.leaves(item)) {
+                if (leaf instanceof Aggregate aggregate) aggregates.put(aggregate.key(), aggregate);
             }
         }
-        // Aggregates used only by HAVING or ORDER BY are computed too
-        List<SelectItem> used = new ArrayList<>(having.items());
-        for (OrderBy item : order) used.add(item.item());
-        for (SelectItem item : used) {
-            if (item instanceof Aggregate aggregate) aggregates.put(aggregate.key(), aggregate);
-        }
 
-        // As in MySQL's default mode: once rows are grouped, a plain column only has one value per
-        // group if it's one of the GROUP BY columns
+        // As in MySQL's default mode: once rows are grouped, a column only has one value per group if
+        // it's in GROUP BY. So anything shown, sorted on or tested in HAVING must be built from GROUP BY
+        // expressions, aggregates and constants.
         boolean grouped = !groupBy.isEmpty() || !aggregates.isEmpty() || having != Expression.ALL_ROWS;
         if (grouped) {
             if (query.columns().isEmpty()) {
                 throw new IllegalArgumentException("SELECT * can't be used with GROUP BY or aggregates, list the columns instead");
             }
-            Set<String> groupKeys = new HashSet<>(groupBy.stream().map(ColumnRef::key).toList());
+            Set<String> groupKeys = new HashSet<>(groupBy.stream().map(SelectItem::key).toList());
+            // A plain column in the select list is reported as written
             for (SelectItem item : query.columns()) {
-                if (!(item instanceof ColumnRef column)) continue;
-                List<ColumnRef> named = column.isStar() ? scope.columns(column.table()) : List.of(scope.resolve(column));
-                for (ColumnRef ref : named) {
-                    if (!groupKeys.contains(ref.key())) throw notGrouped(column.isStar() ? ref.key() : column.toString());
+                if (item instanceof ColumnRef column && !column.isStar() && !groupKeys.contains(scope.resolve(column).key())) {
+                    throw notGrouped(column.toString());
                 }
             }
-            for (SelectItem item : used) {
-                if (item instanceof ColumnRef column && !groupKeys.contains(column.key())) throw notGrouped(column.key());
-            }
+            for (SelectItem item : used) checkGrouped(item, groupKeys);
         }
 
         // As in MySQL: once duplicates are removed, a row stands for several, which may differ in a column
         // that isn't selected, so ORDER BY can only use selected ones
         if (query.distinct()) {
-            Set<String> selected = new HashSet<>(output.values());
+            Set<String> selected = new HashSet<>(output.values().stream().map(SelectItem::key).toList());
             if (query.columns().isEmpty()) scope.columns(null).forEach(ref -> selected.add(ref.key()));
             for (OrderBy item : order) {
                 if (!selected.contains(item.item().key())) {
@@ -244,6 +240,13 @@ public class QueryEngine {
         return null;
     }
 
+    // A GROUP BY expression, an aggregate or a constant is fine; otherwise every part must be
+    private static void checkGrouped(SelectItem item, Set<String> groupKeys) {
+        if (groupKeys.contains(item.key()) || item instanceof Aggregate) return;
+        if (item instanceof ColumnRef column) throw notGrouped(column.key());
+        for (SelectItem child : item.children()) checkGrouped(child, groupKeys);
+    }
+
     private static IllegalArgumentException notGrouped(String column) {
         return new IllegalArgumentException("Column '" + column + "' must be in GROUP BY, or inside an aggregate like COUNT or MAX");
     }
@@ -294,20 +297,21 @@ public class QueryEngine {
         return rows.subList(start, end);
     }
 
-    // The row reduced to the chosen columns, under their labels; empty cells are left out
+    // The row reduced to the chosen columns and expressions, under their labels; empty values are left out
     private static Row choose(Row row, Plan plan) {
         if (plan.output().isEmpty()) return row;
         Map<String, Object> data = new LinkedHashMap<>();
-        for (Map.Entry<String, String> entry : plan.output().entrySet()) {
-            Object value = row.get(entry.getValue());
+        for (Map.Entry<String, SelectItem> entry : plan.output().entrySet()) {
+            Object value = entry.getValue().evaluate(row);
             if (value != null) data.put(entry.getKey(), value);
         }
         return new Row(data);
     }
 
     // One row per group, in order of first appearance, holding the GROUP BY values and each aggregate's
-    // result. Empty cells form a group of their own. Without GROUP BY every row is in one group, so
-    // aggregates over no rows still give one row (COUNT(*) = 0).
+    // result. Empty values form a group of their own. Without GROUP BY every row is in one group, so
+    // aggregates over no rows still give one row (COUNT(*) = 0). Each GROUP BY value is stored under its
+    // expression's key, also when empty, so UPPER(city) in the select list finds its group's value.
     private static List<Row> group(List<Row> rows, Plan plan) {
         Map<List<Object>, List<Row>> groups = new LinkedHashMap<>();
         if (plan.groupBy().isEmpty()) {
@@ -315,7 +319,7 @@ public class QueryEngine {
         } else {
             for (Row row : rows) {
                 List<Object> key = new ArrayList<>();
-                for (ColumnRef column : plan.groupBy()) key.add(row.get(column.key()));
+                for (SelectItem item : plan.groupBy()) key.add(item.evaluate(row));
                 groups.computeIfAbsent(key, k -> new ArrayList<>()).add(row);
             }
         }
@@ -323,8 +327,7 @@ public class QueryEngine {
         for (Map.Entry<List<Object>, List<Row>> group : groups.entrySet()) {
             Map<String, Object> data = new LinkedHashMap<>();
             for (int i = 0; i < plan.groupBy().size(); i++) {
-                Object value = group.getKey().get(i);
-                if (value != null) data.put(plan.groupBy().get(i).key(), value);
+                data.put(plan.groupBy().get(i).key(), group.getKey().get(i));
             }
             for (Map.Entry<String, Aggregate> aggregate : plan.aggregates().entrySet()) {
                 Object value = aggregate.getValue().compute(group.getValue());
@@ -342,7 +345,7 @@ public class QueryEngine {
         List<String> lines = new ArrayList<>();
         for (int i = 0; i < plan.accesses().size(); i++) lines.add(plan.accesses().get(i).describe(i == 0));
         if (!plan.groupBy().isEmpty()) {
-            lines.add("group by " + plan.groupBy().stream().map(ColumnRef::toString).collect(Collectors.joining(", ")));
+            lines.add("group by " + plan.groupBy().stream().map(SelectItem::toString).collect(Collectors.joining(", ")));
         } else if (plan.grouped()) {
             lines.add("aggregate all rows into one");
         }
@@ -361,9 +364,8 @@ public class QueryEngine {
     private static Comparator<Row> comparator(List<OrderBy> order) {
         Comparator<Row> result = null;
         for (OrderBy item : order) {
-            // An aggregate's result is stored under its name, like COUNT(*)
-            String key = item.item().key();
-            Comparator<Row> byColumn = (a, b) -> compareForSort(a.get(key), b.get(key));
+            SelectItem sortBy = item.item();
+            Comparator<Row> byColumn = (a, b) -> compareForSort(sortBy.evaluate(a), sortBy.evaluate(b));
             if (item.descending()) byColumn = byColumn.reversed();
             result = result == null ? byColumn : result.thenComparing(byColumn);
         }
@@ -418,6 +420,11 @@ public class QueryEngine {
 
     public static int update(Table table, Map<String, Object> values, Expression where) {
         return table.update(candidateIds(table, where), where::matches, values);
+    }
+
+    // SET values worked out for each row, like n = n + 1
+    public static int update(Table table, java.util.function.Function<Row, Map<String, Object>> valuesFor, Expression where) {
+        return table.update(candidateIds(table, where), where::matches, valuesFor);
     }
 
     // For a single table: ids an index narrows the WHERE down to, or null to check every row

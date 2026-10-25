@@ -103,9 +103,17 @@ public record IndexLookup(Index index, List<Expression> conditions, List<Object>
             }
             return;
         }
-        // Aggregates only appear in HAVING, which runs after the rows are read
-        if (!(expression instanceof Condition condition) || !(condition.getLeft() instanceof ColumnRef left)
-                || condition.getValue() instanceof Aggregate || condition.getOperator() == Condition.Operator.NOT_EQUALS) {
+        if (!(expression instanceof Condition condition) || condition.getOperator() == Condition.Operator.NOT_EQUALS) return;
+        // A literal on the left reads the other way round: 5 < age is age > 5
+        if (condition.getLeft() instanceof Literal literal && condition.getValue() instanceof ColumnRef right) {
+            Usable u = usable(alias, qualified, condition, right, flip(condition.getOperator()), literal.value(), earlier);
+            if (u != null) usable.add(u);
+            return;
+        }
+        // Otherwise an index needs a plain column compared with a value or another table's column; anything
+        // computed (price * 2), and aggregates, which only appear in HAVING after the rows are read, can't use one
+        if (!(condition.getLeft() instanceof ColumnRef left)
+                || (condition.getValue() instanceof SelectItem item && !(item instanceof ColumnRef))) {
             return;
         }
         // Either side may be this table's column: u.id < o.total is read as o.total > u.id

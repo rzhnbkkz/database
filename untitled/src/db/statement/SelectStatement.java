@@ -60,7 +60,7 @@ public class SelectStatement implements Statement{
         return query.joins();
     }
 
-    public List<ColumnRef> getGroupBy() {
+    public List<SelectItem> getGroupBy() {
         return query.groupBy();
     }
 

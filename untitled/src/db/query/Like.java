@@ -38,7 +38,7 @@ public final class Like implements Expression {
     }
 
     public Boolean evaluate(Row row) {
-        Object value = row.get(item.key());
+        Object value = item.evaluate(row);
         if (value == null) return null;
         return regex.matcher(value.toString()).matches() != negated;
     }
