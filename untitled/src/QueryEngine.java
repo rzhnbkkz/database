@@ -11,6 +11,12 @@ public class QueryEngine {
         return tablesMap.get(tableName);
     }
 
+    public Table requireTable(String tableName) {
+        Table table = tablesMap.get(tableName);
+        if (table == null) throw new IllegalArgumentException("Table '" + tableName + "' does not exist");
+        return table;
+    }
+
     public static void insert(Table table, Map<String, Object> values) {
         Row row = new Row(values);
         table.insert(row);

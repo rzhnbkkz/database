@@ -22,6 +22,10 @@ public class Table {
         return Collections.unmodifiableList(rows);
     }
 
+    public List<Column> getColumns() {
+        return Collections.unmodifiableList(columns);
+    }
+
     public String getName() {
         return name;
     }
@@ -35,13 +39,11 @@ public class Table {
                 case INTEGER -> value instanceof Integer;
                 case VARCHAR -> value instanceof String;
                 case BOOLEAN -> value instanceof Boolean;
-                case FLOAT   -> value instanceof Float;
+                case FLOAT -> value instanceof Float;
             };
 
             if (!valid) {
-                throw new IllegalArgumentException(
-                        "Column '" + col.getName() + "' expects " + col.getDataType()
-                );
+                throw new IllegalArgumentException("Column '" + col.getName() + "' expects " + col.getDataType());
             }
         }
     }

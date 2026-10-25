@@ -16,6 +16,6 @@ public class InsertStatement implements Statement{
     }
 
     public void execute(QueryEngine query) {
-        query.insert(query.getTable(tableName), row.getData());
+        query.insert(query.requireTable(tableName), row.getData());
     }
 }

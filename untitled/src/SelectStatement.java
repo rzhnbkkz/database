@@ -20,9 +20,10 @@ public class SelectStatement implements Statement{
     }
 
     public void execute(QueryEngine query) {
+        Table table = query.requireTable(tableName);
         if(condition == null) {
-            System.out.println(query.selectAll(query.getTable(tableName)));
+            System.out.println(query.selectAll(table));
         }
-        else System.out.println(query.selectWhere(query.getTable(tableName), condition.getColumn(), condition.getValue()));
+        else System.out.println(query.selectWhere(table, condition.getColumn(), condition.getValue()));
     }
 }

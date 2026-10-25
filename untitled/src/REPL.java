@@ -5,6 +5,7 @@ public class REPL {
     public void start(QueryEngine query) {
         while(true) {
             System.out.print("Input a command or type EXIT to exit: ");
+            if(!scanner.hasNextLine()) break;
             String input = scanner.nextLine().trim();
             if(input.equalsIgnoreCase("EXIT")) {
                 break;
