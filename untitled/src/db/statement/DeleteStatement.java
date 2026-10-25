@@ -1,7 +1,9 @@
 package db.statement;
 
+import db.model.Table;
 import db.query.Expression;
 import db.query.QueryEngine;
+import db.query.Scope;
 
 
 public class DeleteStatement implements Statement {
@@ -22,7 +24,8 @@ public class DeleteStatement implements Statement {
     }
 
     public void execute(QueryEngine query) {
-        int count = QueryEngine.delete(query.requireTable(tableName), where);
+        Table table = query.requireTable(tableName);
+        int count = QueryEngine.delete(table, where.resolve(Scope.of(table)));
         System.out.println(count + (count == 1 ? " row" : " rows") + " deleted");
     }
 }

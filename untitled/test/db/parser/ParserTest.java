@@ -2,6 +2,7 @@ package db.parser;
 
 import db.query.Expression;
 import db.query.Condition;
+import db.query.ColumnRef;
 import db.statement.InsertStatement;
 import db.statement.SelectStatement;
 
@@ -13,6 +14,10 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.*;
 
 class ParserTest {
+
+    private List<String> columnNames(String select) {
+        return ((SelectStatement) Parser.parse(select)).getColumns().stream().map(ColumnRef::toString).toList();
+    }
 
     private List<Object> insertedValues(String values) {
         return ((InsertStatement) Parser.parse("INSERT INTO t VALUES (" + values + ")")).getValues();
@@ -46,13 +51,13 @@ class ParserTest {
     void namesKeepTheirCase() {
         SelectStatement s = (SelectStatement) Parser.parse("SELECT userName FROM Users");
         assertEquals("Users", s.getTableName());
-        assertEquals(List.of("userName"), s.getColumns());
+        assertEquals(List.of("userName"), columnNames("SELECT userName FROM Users"));
     }
 
     @Test
     void whitespaceIsOptionalAroundSymbols() {
         SelectStatement s = (SelectStatement) Parser.parse("   SELECT id,name FROM users WHERE id>=1   ");
-        assertEquals(List.of("id", "name"), s.getColumns());
+        assertEquals(List.of("id", "name"), columnNames("SELECT id,name FROM users"));
         assertEquals("id>=1", s.getWhere().toString());
     }
 
@@ -129,14 +134,13 @@ class ParserTest {
                 e.getMessage());
 
         SelectStatement s = (SelectStatement) Parser.parse("SELECT `from`, `two words` FROM `select`");
-        assertEquals(List.of("from", "two words"), s.getColumns());
+        assertEquals(List.of("from", "two words"), columnNames("SELECT `from`, `two words` FROM `select`"));
         assertEquals("select", s.getTableName());
     }
 
     @Test
     void saveAndLoadAreNotReservedAsNames() {
-        SelectStatement s = (SelectStatement) Parser.parse("SELECT save, load FROM users");
-        assertEquals(List.of("save", "load"), s.getColumns());
+        assertEquals(List.of("save", "load"), columnNames("SELECT save, load FROM users"));
     }
 
     @Test
@@ -148,8 +152,8 @@ class ParserTest {
         e = assertThrows(IllegalArgumentException.class, () -> Parser.parse("SELECT * FROM"));
         assertEquals("Expected table name, got end of input", e.getMessage());
 
-        e = assertThrows(IllegalArgumentException.class, () -> Parser.parse("SELECT * FROM users extra"));
-        assertEquals("Unexpected 'extra' at position 21", e.getMessage());
+        e = assertThrows(IllegalArgumentException.class, () -> Parser.parse("SELECT * FROM users u extra"));
+        assertEquals("Unexpected 'extra' at position 23", e.getMessage());
     }
 
     @Test

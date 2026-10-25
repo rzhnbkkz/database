@@ -1,7 +1,9 @@
 package db.statement;
 
+import db.model.Table;
 import db.query.Expression;
 import db.query.QueryEngine;
+import db.query.Scope;
 
 import java.util.Map;
 
@@ -29,7 +31,8 @@ public class UpdateStatement implements Statement {
     }
 
     public void execute(QueryEngine query) {
-        int count = QueryEngine.update(query.requireTable(tableName), values, where);
+        Table table = query.requireTable(tableName);
+        int count = QueryEngine.update(table, values, where.resolve(Scope.of(table)));
         System.out.println(count + (count == 1 ? " row" : " rows") + " updated");
     }
 }

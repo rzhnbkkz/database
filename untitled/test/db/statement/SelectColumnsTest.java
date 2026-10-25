@@ -54,14 +54,14 @@ class SelectColumnsTest {
     @Test
     void parsesColumnList() {
         SelectStatement s = assertInstanceOf(SelectStatement.class, Parser.parse("SELECT name, id FROM users"));
-        assertEquals(List.of("name", "id"), s.getColumns());
+        assertEquals(List.of("name", "id"), s.getColumns().stream().map(Object::toString).toList());
         assertSame(Expression.ALL_ROWS, s.getWhere());
     }
 
     @Test
     void parsesColumnListWithWhere() {
         SelectStatement s = assertInstanceOf(SelectStatement.class, Parser.parse("SELECT name FROM users WHERE id > 1"));
-        assertEquals(List.of("name"), s.getColumns());
+        assertEquals(List.of("name"), s.getColumns().stream().map(Object::toString).toList());
         assertEquals("id>1", s.getWhere().toString());
     }
 

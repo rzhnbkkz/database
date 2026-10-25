@@ -24,14 +24,19 @@ public class Condition implements Expression {
         }
     }
 
-    private String column;
+    private ColumnRef column;
     private Operator operator;
+    // A literal, or a ColumnRef to compare two columns (u.id = o.user_id)
     private Object value;
 
-    public Condition(String column, Operator operator, Object value) {
+    public Condition(ColumnRef column, Operator operator, Object value) {
         this.column = column;
         this.operator = operator;
         this.value = value;
+    }
+
+    public Condition(String column, Operator operator, Object value) {
+        this(new ColumnRef(column), operator, value);
     }
 
     public Condition(String column, Object value) {
@@ -39,6 +44,10 @@ public class Condition implements Expression {
     }
 
     public String getColumn() {
+        return column.key();
+    }
+
+    public ColumnRef getColumnRef() {
         return column;
     }
 
@@ -51,10 +60,11 @@ public class Condition implements Expression {
     }
 
     public Boolean evaluate(Row row) {
-        Object cell = row.get(column);
+        Object cell = row.get(column.key());
+        Object other = value instanceof ColumnRef ref ? row.get(ref.key()) : value;
         // Like SQL NULL, comparing an empty cell is unknown, so it never matches, even with NOT
-        if (cell == null || value == null) return null;
-        Integer cmp = compare(cell, value);
+        if (cell == null || other == null) return null;
+        Integer cmp = compare(cell, other);
         if (operator == Operator.NOT_EQUALS) return cmp == null || cmp != 0;
         if (cmp == null) return false;
         return switch (operator) {
@@ -73,6 +83,19 @@ public class Condition implements Expression {
         if (a instanceof String x && b instanceof String y) return x.compareTo(y);
         if (a instanceof Boolean x && b instanceof Boolean y) return x.compareTo(y);
         return null;
+    }
+
+    public Condition resolve(Scope scope) {
+        Object resolved = value;
+        if (value instanceof ColumnRef ref) {
+            // A bare word on the right is read as a column, but was probably meant as text
+            if (ref.table() == null && !scope.hasColumn(ref.column())) {
+                throw new IllegalArgumentException("Unknown column '" + ref.column()
+                        + "' (to compare with text, put it in quotes: '" + ref.column() + "')");
+            }
+            resolved = scope.resolve(ref);
+        }
+        return new Condition(scope.resolve(column), operator, resolved);
     }
 
     public int precedence() {

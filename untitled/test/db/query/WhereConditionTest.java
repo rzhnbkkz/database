@@ -85,7 +85,7 @@ class WhereConditionTest {
         String[] bad = {
                 "WHERE id", "WHERE = 1", "WHERE id ! 1", "WHERE id = 1 AND", "WHERE id = 1 OR", "WHERE NOT", "WHERE (id = 1",
                 "WHERE id = 1)", "WHERE ()", "WHERE NOT (id = 1", "WHERE id = 1 AND OR id = 2",
-                "WHERE id = 1 id = 2", "WHERE id = Bob", "WHERE id = = 1", "WHERE",
+                "WHERE id = 1 id = 2", "WHERE id = = 1", "WHERE",
         };
         for (String where : bad) {
             assertThrows(IllegalArgumentException.class, () -> Parser.parse("SELECT * FROM users " + where), where);
@@ -199,8 +199,8 @@ class WhereConditionTest {
     @Test
     void unquotedTextErrorSuggestsQuotes() {
         IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
-                () -> Parser.parse("SELECT * FROM users WHERE name = Bob"));
-        assertEquals("Expected a value, got 'Bob' at position 34 (put text in quotes: 'Bob')", e.getMessage());
+                () -> Parser.parse("SELECT * FROM users WHERE name = Bob").execute(engine));
+        assertEquals("Unknown column 'Bob' (to compare with text, put it in quotes: 'Bob')", e.getMessage());
     }
 
     // Matching

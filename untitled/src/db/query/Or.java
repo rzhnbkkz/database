@@ -18,6 +18,10 @@ public record Or(List<Expression> parts) implements Expression {
         return unknown ? null : false;
     }
 
+    public Expression resolve(Scope scope) {
+        return new Or(parts.stream().map(part -> part.resolve(scope)).toList());
+    }
+
     public int precedence() {
         return 1;
     }

@@ -63,6 +63,84 @@ public class QueryEngine {
         return result;
     }
 
+    // A full SELECT, with any number of joins. Rows from a single table keep plain column names;
+    // joined rows are keyed alias.column. Chosen columns are labeled as written (u.name stays u.name).
+    public List<Row> select(TableRef from, List<Join> joins, List<ColumnRef> columns, Expression where) {
+        // Check every name before touching any rows
+        Scope scope = new Scope(!joins.isEmpty());
+        List<Table> tables = new ArrayList<>();
+        tables.add(requireTable(from.table()));
+        scope.add(from.alias(), tables.get(0));
+        List<Expression> conditions = new ArrayList<>();
+        for (Join join : joins) {
+            tables.add(requireTable(join.table().table()));
+            scope.add(join.table().alias(), tables.get(tables.size() - 1));
+            // ON can use this table and the ones before it, not later ones
+            conditions.add(join.on().resolve(scope));
+        }
+        Expression filter = where.resolve(scope);
+        Map<String, String> output = new LinkedHashMap<>(); // label -> row key
+        for (ColumnRef column : columns) {
+            if (column.isStar()) {
+                for (ColumnRef ref : scope.columns(column.table())) output.put(ref.key(), ref.key());
+            } else {
+                output.put(column.toString(), scope.resolve(column).key());
+            }
+        }
+
+        List<Row> rows = new ArrayList<>();
+        for (Row row : tables.get(0).getRows()) rows.add(withAlias(row, from.alias(), scope));
+        for (int i = 0; i < joins.size(); i++) {
+            rows = join(rows, tables.get(i + 1), joins.get(i), conditions.get(i), scope);
+        }
+
+        List<Row> result = new ArrayList<>();
+        for (Row row : rows) {
+            if (!filter.matches(row)) continue;
+            if (output.isEmpty()) {
+                result.add(row);
+                continue;
+            }
+            Map<String, Object> data = new LinkedHashMap<>();
+            for (Map.Entry<String, String> entry : output.entrySet()) {
+                Object value = row.get(entry.getValue());
+                if (value != null) data.put(entry.getKey(), value);
+            }
+            result.add(new Row(data));
+        }
+        return result;
+    }
+
+    // Nested loop join: every left row is tried against every row of the joined table
+    private static List<Row> join(List<Row> leftRows, Table table, Join join, Expression on, Scope scope) {
+        List<Row> result = new ArrayList<>();
+        for (Row left : leftRows) {
+            boolean matched = false;
+            for (Row right : table.getRows()) {
+                Map<String, Object> data = new LinkedHashMap<>(left.getData());
+                data.putAll(withAlias(right, join.table().alias(), scope).getData());
+                Row combined = new Row(data);
+                if (on.matches(combined)) {
+                    result.add(combined);
+                    matched = true;
+                }
+            }
+            // The joined table's columns are simply absent, which reads as empty
+            if (!matched && join.type() == Join.Type.LEFT) result.add(left);
+        }
+        return result;
+    }
+
+    // In a join, name -> alias.name, so columns of different tables can't collide
+    private static Row withAlias(Row row, String alias, Scope scope) {
+        if (!scope.isQualified()) return row;
+        Map<String, Object> data = new LinkedHashMap<>();
+        for (Map.Entry<String, Object> entry : row.getData().entrySet()) {
+            data.put(new ColumnRef(alias, entry.getKey()).key(), entry.getValue());
+        }
+        return new Row(data);
+    }
+
     public static List<Row> selectWhere(Table table, String column, Object value) {
         return selectWhere(table, new Condition(column, value));
     }

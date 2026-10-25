@@ -4,9 +4,12 @@ import db.model.Column;
 import db.model.DataType;
 import db.query.And;
 import db.query.Condition;
+import db.query.ColumnRef;
 import db.query.Expression;
+import db.query.Join;
 import db.query.Not;
 import db.query.Or;
+import db.query.TableRef;
 import db.statement.CreateStatement;
 import db.statement.DeleteStatement;
 import db.statement.InsertStatement;
@@ -21,7 +24,11 @@ import java.util.*;
 // Recursive descent parser: one method per grammar rule, each consuming the tokens it recognises.
 //
 //   statement := (select | insert | update | delete | create | save | load) [';']
-//   select    := SELECT ('*' | name {',' name}) FROM name [where]
+//   select    := SELECT ('*' | item {',' item}) FROM table {join} [where]
+//   item      := column | name '.' '*'
+//   column    := name ['.' name]          table.column, where table may be an alias
+//   table     := name [[AS] name]         the optional second name is an alias
+//   join      := [INNER | LEFT [OUTER]] JOIN table ON or
 //   insert    := INSERT INTO name ['(' name {',' name} ')'] VALUES '(' literal {',' literal} ')'
 //   update    := UPDATE name SET name '=' literal {',' name '=' literal} [where]
 //   delete    := DELETE FROM name [where]
@@ -32,7 +39,7 @@ import java.util.*;
 //   where     := WHERE or
 //   or        := and {OR and}             OR binds loosest, so a AND b OR c is (a AND b) OR c
 //   and       := not {AND not}
-//   not       := NOT not | '(' or ')' | name op literal
+//   not       := NOT not | '(' or ')' | column op (literal | column)
 //   literal   := STRING | ['-'] NUMBER | TRUE | FALSE | NULL
 public class Parser {
     private final List<Token> tokens;
@@ -66,11 +73,54 @@ public class Parser {
 
     private Statement parseSelect() {
         expectKeyword("SELECT");
-        List<String> columns = new ArrayList<>();
-        if (!acceptSymbol("*")) columns = parseNameList("column name");
+        List<ColumnRef> columns = new ArrayList<>();
+        if (!acceptSymbol("*")) {
+            do {
+                columns.add(parseSelectItem());
+            } while (acceptSymbol(","));
+        }
         expectKeyword("FROM");
+        TableRef from = parseTableRef();
+        List<Join> joins = new ArrayList<>();
+        Join join;
+        while ((join = parseJoin()) != null) joins.add(join);
+        return new SelectStatement(from, joins, columns, parseWhere());
+    }
+
+    // column or table.*
+    private ColumnRef parseSelectItem() {
+        String name = expectName("column name");
+        if (!acceptSymbol(".")) return new ColumnRef(name);
+        if (acceptSymbol("*")) return new ColumnRef(name, "*");
+        return new ColumnRef(name, expectName("column name"));
+    }
+
+    private ColumnRef parseColumnRef() {
+        String name = expectName("column name");
+        if (!acceptSymbol(".")) return new ColumnRef(name);
+        return new ColumnRef(name, expectName("column name"));
+    }
+
+    private TableRef parseTableRef() {
         String table = expectName("table name");
-        return new SelectStatement(table, columns, parseWhere());
+        if (acceptKeyword("AS")) return new TableRef(table, expectName("alias"));
+        if (peek().type() == TokenType.IDENTIFIER) return new TableRef(table, expectName("alias"));
+        return new TableRef(table);
+    }
+
+    // null when no JOIN follows
+    private Join parseJoin() {
+        Join.Type type = Join.Type.INNER;
+        if (acceptKeyword("LEFT")) {
+            acceptKeyword("OUTER");
+            type = Join.Type.LEFT;
+        } else if (!acceptKeyword("INNER") && !peek().isKeyword("JOIN")) {
+            return null;
+        }
+        expectKeyword("JOIN");
+        TableRef table = parseTableRef();
+        expectKeyword("ON");
+        return new Join(type, table, parseOr());
     }
 
     private Statement parseInsert() {
@@ -206,7 +256,7 @@ public class Parser {
     }
 
     private Condition parseCondition() {
-        String column = expectName("column name");
+        ColumnRef column = parseColumnRef();
         Token token = peek();
         Condition.Operator operator;
         if (token.type() != TokenType.SYMBOL) throw expected("a comparison (= != <> < > <= >=)");
@@ -219,6 +269,8 @@ public class Parser {
             }
         }
         index++;
+        // A name on the right compares two columns: u.id = o.user_id
+        if (peek().type() == TokenType.IDENTIFIER) return new Condition(column, operator, parseColumnRef());
         return new Condition(column, operator, parseLiteral());
     }
 

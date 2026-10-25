@@ -12,6 +12,7 @@ public class Lexer {
             "SELECT", "FROM", "WHERE", "AND", "OR", "NOT",
             "INSERT", "INTO", "VALUES", "UPDATE", "SET", "DELETE",
             "CREATE", "TABLE", "PRIMARY", "KEY",
+            "JOIN", "INNER", "LEFT", "OUTER", "ON", "AS",
             "TRUE", "FALSE", "NULL");
 
     private final String input;
@@ -116,7 +117,7 @@ public class Lexer {
         String two = input.substring(pos, Math.min(pos + 2, input.length()));
         String symbol;
         if (two.equals("!=") || two.equals("<>") || two.equals("<=") || two.equals(">=")) symbol = two;
-        else if ("(),;*-=<>".indexOf(input.charAt(pos)) >= 0) symbol = String.valueOf(input.charAt(pos));
+        else if ("(),;*-=<>.".indexOf(input.charAt(pos)) >= 0) symbol = String.valueOf(input.charAt(pos));
         else throw new IllegalArgumentException("Unexpected character '" + input.charAt(pos) + "' at position " + (start + 1));
         pos += symbol.length();
         tokens.add(new Token(TokenType.SYMBOL, symbol, start + 1));

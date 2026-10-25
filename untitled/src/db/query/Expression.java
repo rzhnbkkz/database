@@ -13,6 +13,9 @@ public interface Expression {
 
     Boolean evaluate(Row row);
 
+    // The same expression with every column checked against the scope and turned into its row key
+    Expression resolve(Scope scope);
+
     default boolean matches(Row row) {
         return Boolean.TRUE.equals(evaluate(row));
     }

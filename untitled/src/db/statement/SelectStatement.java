@@ -1,30 +1,36 @@
 package db.statement;
 
+import db.query.ColumnRef;
 import db.query.Expression;
+import db.query.Join;
 import db.query.QueryEngine;
+import db.query.TableRef;
 
 import java.util.List;
 
 public class SelectStatement implements Statement{
-    private String tableName;
-    private List<String> columns;
+    private TableRef from;
+    private List<Join> joins;
+    // Empty means every column (SELECT *)
+    private List<ColumnRef> columns;
     private Expression where;
 
-    public SelectStatement(String tableName, List<String> columns, Expression where) {
-        this.tableName = tableName;
+    public SelectStatement(TableRef from, List<Join> joins, List<ColumnRef> columns, Expression where) {
+        this.from = from;
+        this.joins = joins;
         this.columns = columns;
         this.where = where;
     }
 
     public SelectStatement(String tableName, Expression where) {
-        this(tableName, List.of(), where);
+        this(new TableRef(tableName), List.of(), List.of(), where);
     }
 
     public SelectStatement(String tableName) {
         this(tableName, Expression.ALL_ROWS);
     }
 
-    public List<String> getColumns() {
+    public List<ColumnRef> getColumns() {
         return columns;
     }
 
@@ -33,10 +39,18 @@ public class SelectStatement implements Statement{
     }
 
     public String getTableName() {
-        return tableName;
+        return from.table();
+    }
+
+    public TableRef getFrom() {
+        return from;
+    }
+
+    public List<Join> getJoins() {
+        return joins;
     }
 
     public void execute(QueryEngine query) {
-        System.out.println(QueryEngine.select(query.requireTable(tableName), columns, where));
+        System.out.println(query.select(from, joins, columns, where));
     }
 }

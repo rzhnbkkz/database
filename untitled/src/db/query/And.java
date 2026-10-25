@@ -18,6 +18,10 @@ public record And(List<Expression> parts) implements Expression {
         return unknown ? null : true;
     }
 
+    public Expression resolve(Scope scope) {
+        return new And(parts.stream().map(part -> part.resolve(scope)).toList());
+    }
+
     public int precedence() {
         return 2;
     }

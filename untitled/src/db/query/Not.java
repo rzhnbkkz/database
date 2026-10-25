@@ -10,6 +10,10 @@ public record Not(Expression part) implements Expression {
         return result == null ? null : !result;
     }
 
+    public Expression resolve(Scope scope) {
+        return new Not(part.resolve(scope));
+    }
+
     public int precedence() {
         return 3;
     }
