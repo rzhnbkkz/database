@@ -1,5 +1,6 @@
 package db.query;
 
+import db.model.DataType;
 import db.model.Index;
 import db.model.Row;
 import db.model.Table;
@@ -16,14 +17,16 @@ import java.util.stream.Collectors;
 // column on: equal values for some leading columns (prefix), then optionally a range on the next one.
 // With (city, age): city = 'Oslo' AND age > 30 uses both, age > 30 alone uses neither. Each value is a
 // literal, or a column of a table read earlier in the join (u.id in o.user_id = u.id).
-public record IndexLookup(Index index, List<Condition> conditions, List<Object> prefix, boolean ranged, Bound low, Bound high) {
+public record IndexLookup(Index index, List<Expression> conditions, List<Object> prefix, boolean ranged, Bound low, Bound high) {
 
     // One end of the range on the column after the prefix; null when that end is open
     public record Bound(Object value, boolean inclusive) {
     }
 
-    // A condition an index could answer, turned around if needed so this table's column is on the left
-    private record Usable(Condition condition, String column, Condition.Operator operator, Object other) {}
+    // A condition an index could answer, as column operator value, turned around if needed so this table's
+    // column is on the left. A LIKE with a fixed start gives two of these: name LIKE 'Al%' is name >= 'Al'
+    // AND name < 'Am' (plus the LIKE itself, checked on the rows found).
+    private record Usable(Expression condition, String column, Condition.Operator operator, Object other) {}
 
     // Picks the index that narrows the most: a unique index with every column matched by =, then the most
     // leading columns matched by =, then a range with both ends over one with a single end. Earlier indexes
@@ -32,12 +35,12 @@ public record IndexLookup(Index index, List<Condition> conditions, List<Object> 
     // aliases of tables whose values are known when this table is read. null if no index helps.
     public static IndexLookup find(Table table, String alias, boolean qualified, Expression expression, Set<String> earlier) {
         List<Usable> usable = new ArrayList<>();
-        collect(alias, qualified, expression, earlier, usable);
+        collect(table, alias, qualified, expression, earlier, usable);
         IndexLookup best = null;
         int bestScore = 0;
         for (Index index : table.getIndexes()) {
             List<Object> prefix = new ArrayList<>();
-            List<Condition> used = new ArrayList<>();
+            List<Expression> used = new ArrayList<>();
             int matched = 0;
             for (String column : index.getColumns()) {
                 Usable equal = usable.stream()
@@ -58,11 +61,12 @@ public record IndexLookup(Index index, List<Condition> conditions, List<Object> 
                     boolean inclusive = u.operator() == Condition.Operator.GREATER_OR_EQUAL || u.operator() == Condition.Operator.LESS_OR_EQUAL;
                     if (lower && low == null) {
                         low = new Bound(u.other(), inclusive);
-                        used.add(u.condition());
                     } else if (!lower && high == null) {
                         high = new Bound(u.other(), inclusive);
-                        used.add(u.condition());
+                    } else {
+                        continue;
                     }
+                    if (!used.contains(u.condition())) used.add(u.condition());
                 }
             }
             boolean ranged = low != null || high != null;
@@ -77,9 +81,26 @@ public record IndexLookup(Index index, List<Condition> conditions, List<Object> 
         return best;
     }
 
-    private static void collect(String alias, boolean qualified, Expression expression, Set<String> earlier, List<Usable> usable) {
+    private static void collect(Table table, String alias, boolean qualified, Expression expression, Set<String> earlier,
+                                List<Usable> usable) {
         if (expression instanceof And and) {
-            for (Expression part : and.parts()) collect(alias, qualified, part, earlier, usable);
+            for (Expression part : and.parts()) collect(table, alias, qualified, part, earlier, usable);
+            return;
+        }
+        if (expression instanceof Like like) {
+            // Only for text columns: 42 LIKE '4%' matches as text, which a number index can't follow
+            String start = like.literalPrefix();
+            if (like.negated() || start.isEmpty() || !(like.item() instanceof ColumnRef column) || !ours(alias, qualified, column)
+                    || table.getColumns().stream().noneMatch(c -> c.getName().equals(column.column()) && c.getDataType() == DataType.VARCHAR)) {
+                return;
+            }
+            usable.add(new Usable(like, column.column(), Condition.Operator.GREATER_OR_EQUAL, start));
+            char last = start.charAt(start.length() - 1);
+            // Every text starting with "Al" is below "Am"
+            if (last != Character.MAX_VALUE) {
+                String after = start.substring(0, start.length() - 1) + (char) (last + 1);
+                usable.add(new Usable(like, column.column(), Condition.Operator.LESS, after));
+            }
             return;
         }
         // Aggregates only appear in HAVING, which runs after the rows are read
@@ -97,8 +118,7 @@ public record IndexLookup(Index index, List<Condition> conditions, List<Object> 
 
     private static Usable usable(String alias, boolean qualified, Condition condition, ColumnRef column,
                                  Condition.Operator operator, Object other, Set<String> earlier) {
-        boolean ours = qualified ? alias.equals(column.table()) : column.table() == null;
-        if (!ours) return null;
+        if (!ours(alias, qualified, column)) return null;
         if (other instanceof ColumnRef ref) {
             // Comparing with this table's own column (id = manager_id) needs every row anyway
             if (ref.table() == null || !earlier.contains(ref.table())) return null;
@@ -106,6 +126,10 @@ public record IndexLookup(Index index, List<Condition> conditions, List<Object> 
             return null;
         }
         return new Usable(condition, column.column(), operator, other);
+    }
+
+    private static boolean ours(String alias, boolean qualified, ColumnRef column) {
+        return qualified ? alias.equals(column.table()) : column.table() == null;
     }
 
     private static Condition.Operator flip(Condition.Operator operator) {
@@ -151,6 +175,6 @@ public record IndexLookup(Index index, List<Condition> conditions, List<Object> 
 
     @Override
     public String toString() {
-        return "index " + index.getName() + " (" + conditions.stream().map(Condition::toString).collect(Collectors.joining(" AND ")) + ")";
+        return "index " + index.getName() + " (" + conditions.stream().map(Expression::toString).collect(Collectors.joining(" AND ")) + ")";
     }
 }

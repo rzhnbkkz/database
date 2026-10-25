@@ -133,15 +133,18 @@ public class QueryEngine {
 
         Map<String, String> output = new LinkedHashMap<>(); // label -> row key
         Map<String, Aggregate> aggregates = new LinkedHashMap<>();
-        for (SelectItem item : query.columns()) {
+        for (int i = 0; i < query.columns().size(); i++) {
+            SelectItem item = query.columns().get(i);
+            // Labeled with its alias, or as written
+            String label = query.aliases().get(i) != null ? query.aliases().get(i) : item.toString();
             if (item instanceof Aggregate aggregate) {
                 Aggregate resolved = aggregate.resolve(scope);
                 aggregates.put(resolved.key(), resolved);
-                output.put(aggregate.toString(), resolved.key());
+                output.put(label, resolved.key());
             } else if (((ColumnRef) item).isStar()) {
                 for (ColumnRef ref : scope.columns(((ColumnRef) item).table())) output.put(ref.key(), ref.key());
             } else {
-                output.put(item.toString(), scope.resolve((ColumnRef) item).key());
+                output.put(label, scope.resolve((ColumnRef) item).key());
             }
         }
         // Aggregates used only by HAVING or ORDER BY are computed too
@@ -159,13 +162,27 @@ public class QueryEngine {
                 throw new IllegalArgumentException("SELECT * can't be used with GROUP BY or aggregates, list the columns instead");
             }
             Set<String> groupKeys = new HashSet<>(groupBy.stream().map(ColumnRef::key).toList());
-            for (Map.Entry<String, String> entry : output.entrySet()) {
-                if (!aggregates.containsKey(entry.getValue()) && !groupKeys.contains(entry.getValue())) {
-                    throw notGrouped(entry.getKey());
+            for (SelectItem item : query.columns()) {
+                if (!(item instanceof ColumnRef column)) continue;
+                List<ColumnRef> named = column.isStar() ? scope.columns(column.table()) : List.of(scope.resolve(column));
+                for (ColumnRef ref : named) {
+                    if (!groupKeys.contains(ref.key())) throw notGrouped(column.isStar() ? ref.key() : column.toString());
                 }
             }
             for (SelectItem item : used) {
                 if (item instanceof ColumnRef column && !groupKeys.contains(column.key())) throw notGrouped(column.key());
+            }
+        }
+
+        // As in MySQL: once duplicates are removed, a row stands for several, which may differ in a column
+        // that isn't selected, so ORDER BY can only use selected ones
+        if (query.distinct()) {
+            Set<String> selected = new HashSet<>(output.values());
+            if (query.columns().isEmpty()) scope.columns(null).forEach(ref -> selected.add(ref.key()));
+            for (OrderBy item : order) {
+                if (!selected.contains(item.item().key())) {
+                    throw new IllegalArgumentException("ORDER BY " + item.item() + " must be in the SELECT list when using DISTINCT");
+                }
             }
         }
 
@@ -189,7 +206,8 @@ public class QueryEngine {
         boolean orderedByIndex = ordered != null;
         // Rows come out of the joins in the first table's order, so once enough of them match, nothing
         // later can change which ones are kept
-        long stopAt = !grouped && query.limit() != null && (order.isEmpty() || orderedByIndex)
+        // (with DISTINCT, duplicates found later wouldn't count, so every row is needed)
+        long stopAt = !grouped && !query.distinct() && query.limit() != null && (order.isEmpty() || orderedByIndex)
                 ? (long) query.offset() + query.limit() : -1;
         return new Plan(scope, accesses, orderedByIndex, stopAt, conditions, filter, grouped, groupBy, having, aggregates,
                 order, output);
@@ -241,23 +259,37 @@ public class QueryEngine {
         }
         // List.sort is stable, so rows that tie keep their table order
         if (!plan.order().isEmpty() && !plan.orderedByIndex()) matching.sort(comparator(plan.order()));
-        int start = Math.min(query.offset(), matching.size());
-        int end = query.limit() == null ? matching.size() : (int) Math.min(matching.size(), (long) start + query.limit());
-
-        List<Row> result = new ArrayList<>();
-        for (Row row : matching.subList(start, end)) {
-            if (plan.output().isEmpty()) {
-                result.add(row);
-                continue;
+        // DISTINCT compares the chosen columns, so they're picked first; otherwise only the kept rows are
+        if (query.distinct()) {
+            Set<Map<String, Object>> seen = new HashSet<>();
+            List<Row> unique = new ArrayList<>();
+            for (Row row : matching) {
+                Row chosen = choose(row, plan);
+                // The first of equal rows is kept, so the sort order stays
+                if (seen.add(chosen.getData())) unique.add(chosen);
             }
-            Map<String, Object> data = new LinkedHashMap<>();
-            for (Map.Entry<String, String> entry : plan.output().entrySet()) {
-                Object value = row.get(entry.getValue());
-                if (value != null) data.put(entry.getKey(), value);
-            }
-            result.add(new Row(data));
+            return cut(unique, query);
         }
+        List<Row> result = new ArrayList<>();
+        for (Row row : cut(matching, query)) result.add(choose(row, plan));
         return result;
+    }
+
+    private static List<Row> cut(List<Row> rows, SelectQuery query) {
+        int start = Math.min(query.offset(), rows.size());
+        int end = query.limit() == null ? rows.size() : (int) Math.min(rows.size(), (long) start + query.limit());
+        return rows.subList(start, end);
+    }
+
+    // The row reduced to the chosen columns, under their labels; empty cells are left out
+    private static Row choose(Row row, Plan plan) {
+        if (plan.output().isEmpty()) return row;
+        Map<String, Object> data = new LinkedHashMap<>();
+        for (Map.Entry<String, String> entry : plan.output().entrySet()) {
+            Object value = row.get(entry.getValue());
+            if (value != null) data.put(entry.getKey(), value);
+        }
+        return new Row(data);
     }
 
     // One row per group, in order of first appearance, holding the GROUP BY values and each aggregate's
@@ -305,6 +337,7 @@ public class QueryEngine {
         if (!plan.order().isEmpty() && !plan.orderedByIndex()) {
             lines.add("sort by " + plan.order().stream().map(OrderBy::toString).collect(Collectors.joining(", ")));
         }
+        if (query.distinct()) lines.add("remove duplicate rows");
         List<String> cut = new ArrayList<>();
         if (query.limit() != null) cut.add("limit " + query.limit());
         if (query.offset() > 0) cut.add("offset " + query.offset());

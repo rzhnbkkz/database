@@ -35,6 +35,15 @@ public class SelectStatement implements Statement{
         return query.columns();
     }
 
+    // One per column, null where there's no AS
+    public List<String> getAliases() {
+        return query.aliases();
+    }
+
+    public boolean isDistinct() {
+        return query.distinct();
+    }
+
     public Expression getWhere() {
         return query.where();
     }

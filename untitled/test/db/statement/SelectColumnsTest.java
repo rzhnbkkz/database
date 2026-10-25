@@ -115,8 +115,12 @@ class SelectColumnsTest {
     }
 
     @Test
-    void rejectsColumnsWithoutCommas() {
-        assertThrows(IllegalArgumentException.class, () -> Parser.parse("SELECT name id FROM users"));
+    void secondNameWithoutCommaIsAnAlias() {
+        // As in MySQL, AS is optional, so a missing comma turns the next name into an alias
+        SelectStatement s = (SelectStatement) Parser.parse("SELECT name id FROM users");
+        assertEquals(List.of("name"), s.getColumns().stream().map(Object::toString).toList());
+        assertEquals(List.of("id"), s.getAliases());
+        assertThrows(IllegalArgumentException.class, () -> Parser.parse("SELECT name id active FROM users"));
     }
 
     @Test

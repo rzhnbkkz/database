@@ -9,7 +9,7 @@ public class Main {
                 Commands:
                   CREATE TABLE <table> (<column> <type> [PRIMARY KEY], ...)   types: INTEGER, VARCHAR, BOOLEAN, FLOAT
                   INSERT INTO <table> [(<column>, ...)] VALUES (<value>, ...)
-                  SELECT <column>, ... | * FROM <table> [<alias>]
+                  SELECT [DISTINCT] <column> [AS <alias>], ... | * FROM <table> [<alias>]
                     [[INNER | LEFT] JOIN <table> [<alias>] ON <condition>] ... [WHERE <condition>]
                     [GROUP BY <column>, ...] [HAVING <condition>] [ORDER BY <column> [ASC | DESC], ...] [LIMIT <count> [OFFSET <count>]]
                   UPDATE <table> SET <column> = <value>, ... [WHERE ...]
@@ -22,9 +22,11 @@ public class Main {
                   LOAD '<path>'
                   EXIT
                 Conditions: <column> <op> <value or column> with op one of = != <> > < >= <=,
+                  or <column> IS [NOT] NULL, [NOT] IN (<value>, ...), [NOT] BETWEEN <value> AND <value>,
+                  [NOT] LIKE '<pattern>' (% any text, _ one character),
                   combined with AND, OR, NOT and parentheses: (a = 1 OR b = 2) AND NOT c = 3
                 Columns: name or table.name (u.name with an alias); u.* selects every column of u;
-                  COUNT(*), COUNT(<column>), SUM, AVG, MIN, MAX(<column>) in the column list, HAVING and ORDER BY
+                  COUNT(*), COUNT([DISTINCT] <column>), SUM, AVG, MIN, MAX in the column list, HAVING and ORDER BY
                 Values: 42, -1.5, TRUE, FALSE, NULL, 'text' (text always in quotes)""");
         new REPL().start(new QueryEngine());
     }

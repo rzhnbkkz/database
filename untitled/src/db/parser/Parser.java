@@ -7,7 +7,9 @@ import db.query.And;
 import db.query.Condition;
 import db.query.ColumnRef;
 import db.query.Expression;
+import db.query.IsNull;
 import db.query.Join;
+import db.query.Like;
 import db.query.Not;
 import db.query.Or;
 import db.query.OrderBy;
@@ -33,14 +35,15 @@ import java.util.*;
 //
 //   statement := (select | insert | update | delete | create | createIdx | dropIdx | showIdx | explain
 //                 | save | load) [';']
-//   select    := SELECT ('*' | item {',' item}) FROM table {join} [where] [groupBy] [having] [orderBy] [limit]
-//   item      := aggregate | column | name '.' '*'
-//   aggregate := COUNT '(' ('*' | column) ')' | (SUM | AVG | MIN | MAX) '(' column ')'
+//   select    := SELECT [DISTINCT] ('*' | item {',' item}) FROM table {join} [where] [groupBy] [having] [orderBy] [limit]
+//   item      := (aggregate | column) [[AS] name] | name '.' '*'
+//   aggregate := COUNT '(' '*' ')' | (COUNT | SUM | AVG | MIN | MAX) '(' [DISTINCT] column ')'
 //   column    := name ['.' name]          table.column, where table may be an alias
 //   table     := name [[AS] name]         the optional second name is an alias
 //   join      := [INNER | LEFT [OUTER]] JOIN table ON or
 //   groupBy   := GROUP BY column {',' column}
 //   having    := HAVING or                in HAVING, either side of a comparison may be an aggregate
+//                                         GROUP BY, HAVING and ORDER BY may name a select-list alias
 //   orderBy   := ORDER BY sortItem {',' sortItem}
 //   sortItem  := (aggregate | column) [ASC | DESC]
 //   limit     := LIMIT count [OFFSET count] | LIMIT count ',' count    (the second: LIMIT offset, count)
@@ -58,7 +61,10 @@ import java.util.*;
 //   where     := WHERE or
 //   or        := and {OR and}             OR binds loosest, so a AND b OR c is (a AND b) OR c
 //   and       := not {AND not}
-//   not       := NOT not | '(' or ')' | operand op (literal | operand)
+//   not       := NOT not | '(' or ')' | test
+//   test      := operand op value | operand IS [NOT] NULL | operand [NOT] IN '(' literal {',' literal} ')'
+//              | operand [NOT] BETWEEN value AND value | operand [NOT] LIKE STRING
+//   value     := literal | operand
 //   operand   := column, or in HAVING also aggregate
 //   literal   := STRING | ['-'] NUMBER | TRUE | FALSE | NULL
 public class Parser {
@@ -66,6 +72,8 @@ public class Parser {
     private int index = 0;
     // Set while parsing HAVING, the only place a condition may use an aggregate
     private boolean inHaving = false;
+    // The SELECT list's aliases, which GROUP BY, HAVING and ORDER BY may use in place of what they name
+    private final Map<String, SelectItem> aliases = new HashMap<>();
 
     private Parser(List<Token> tokens) {
         this.tokens = tokens;
@@ -102,10 +110,22 @@ public class Parser {
 
     private Statement parseSelect() {
         expectKeyword("SELECT");
+        boolean distinct = acceptKeyword("DISTINCT");
         List<SelectItem> columns = new ArrayList<>();
+        List<String> columnAliases = new ArrayList<>();
         if (!acceptSymbol("*")) {
             do {
-                columns.add(parseSelectItem());
+                SelectItem item = parseSelectItem();
+                // AS is optional, as in MySQL: SELECT COUNT(*) total
+                String alias = acceptKeyword("AS") || peek().type() == TokenType.IDENTIFIER ? expectName("alias") : null;
+                if (alias != null) {
+                    if (item instanceof ColumnRef column && column.isStar()) {
+                        throw new IllegalArgumentException(column + " can't have an alias");
+                    }
+                    if (aliases.put(alias, item) != null) throw new IllegalArgumentException("Alias '" + alias + "' is used twice");
+                }
+                columns.add(item);
+                columnAliases.add(alias);
             } while (acceptSymbol(","));
         }
         expectKeyword("FROM");
@@ -119,7 +139,11 @@ public class Parser {
         if (acceptKeyword("GROUP")) {
             expectKeyword("BY");
             do {
-                groupBy.add(parseColumnRef());
+                SelectItem item = withAlias(parseColumnRef());
+                if (item instanceof Aggregate aggregate) {
+                    throw new IllegalArgumentException("Can't GROUP BY an aggregate like " + aggregate);
+                }
+                groupBy.add((ColumnRef) item);
             } while (acceptSymbol(","));
         }
 
@@ -135,7 +159,7 @@ public class Parser {
             expectKeyword("BY");
             do {
                 Aggregate aggregate = parseAggregate();
-                SelectItem item = aggregate != null ? aggregate : parseColumnRef();
+                SelectItem item = aggregate != null ? aggregate : withAlias(parseColumnRef());
                 boolean descending = acceptWord("DESC");
                 if (!descending) acceptWord("ASC");
                 orderBy.add(new OrderBy(item, descending));
@@ -154,7 +178,14 @@ public class Parser {
                 limit = parseCount("LIMIT");
             }
         }
-        return new SelectStatement(new SelectQuery(from, joins, columns, where, groupBy, having, orderBy, limit, offset));
+        return new SelectStatement(new SelectQuery(distinct, columns, columnAliases, from, joins, where, groupBy, having,
+                orderBy, limit, offset));
+    }
+
+    // A plain name that is a select-list alias stands for what it names: ORDER BY total, for COUNT(*) AS total.
+    // An alias wins over a column of the same name.
+    private SelectItem withAlias(ColumnRef ref) {
+        return ref.table() == null && aliases.containsKey(ref.column()) ? aliases.get(ref.column()) : ref;
     }
 
     // A whole number, zero or more, for LIMIT and OFFSET
@@ -192,9 +223,12 @@ public class Parser {
             throw new IllegalArgumentException("Unknown function " + name.text() + ", expected COUNT, SUM, AVG, MIN or MAX");
         }
         index += 2;
-        Aggregate aggregate = function == Aggregate.Function.COUNT && acceptSymbol("*")
-                ? Aggregate.countAll()
-                : new Aggregate(function, parseColumnRef());
+        if (function == Aggregate.Function.COUNT && acceptSymbol("*")) {
+            expectSymbol(")");
+            return Aggregate.countAll();
+        }
+        boolean distinct = acceptKeyword("DISTINCT");
+        Aggregate aggregate = new Aggregate(function, parseColumnRef(), distinct);
         expectSymbol(")");
         return aggregate;
     }
@@ -390,8 +424,41 @@ public class Parser {
         return parseCondition();
     }
 
-    private Condition parseCondition() {
+    private Expression parseCondition() {
         SelectItem column = parseOperand();
+        if (acceptKeyword("IS")) {
+            boolean negated = acceptKeyword("NOT");
+            expectKeyword("NULL");
+            return new IsNull(column, negated);
+        }
+        boolean negated = acceptKeyword("NOT");
+        if (acceptKeyword("IN")) {
+            // x IN (a, b) means x = a OR x = b, which also gives SQL's answer for NULLs in the list
+            expectSymbol("(");
+            List<Expression> options = new ArrayList<>();
+            do {
+                options.add(new Condition(column, Condition.Operator.EQUALS, parseLiteral()));
+            } while (acceptSymbol(","));
+            expectSymbol(")");
+            Expression in = options.size() == 1 ? options.get(0) : new Or(options);
+            return negated ? new Not(in) : in;
+        }
+        if (acceptKeyword("BETWEEN")) {
+            // x BETWEEN a AND b means x >= a AND x <= b, so a range index can answer it
+            Object low = parseValue();
+            expectKeyword("AND");
+            Object high = parseValue();
+            Expression between = new And(List.of(new Condition(column, Condition.Operator.GREATER_OR_EQUAL, low),
+                    new Condition(column, Condition.Operator.LESS_OR_EQUAL, high)));
+            return negated ? new Not(between) : between;
+        }
+        if (acceptKeyword("LIKE")) {
+            Token pattern = peek();
+            if (pattern.type() != TokenType.STRING) throw expected("a pattern in quotes, like 'Al%'");
+            index++;
+            return new Like(column, pattern.text(), negated);
+        }
+        if (negated) throw expected("IN, BETWEEN or LIKE after NOT");
         Token token = peek();
         Condition.Operator operator;
         if (token.type() != TokenType.SYMBOL) throw expected("a comparison (= != <> < > <= >=)");
@@ -404,9 +471,12 @@ public class Parser {
             }
         }
         index++;
-        // A name on the right compares two columns: u.id = o.user_id
-        if (peek().type() == TokenType.IDENTIFIER) return new Condition(column, operator, parseOperand());
-        return new Condition(column, operator, parseLiteral());
+        return new Condition(column, operator, parseValue());
+    }
+
+    // A literal, or a name, which compares two columns: u.id = o.user_id
+    private Object parseValue() {
+        return peek().type() == TokenType.IDENTIFIER ? parseOperand() : parseLiteral();
     }
 
     // A column, or in HAVING an aggregate
@@ -416,7 +486,9 @@ public class Parser {
                     + "use HAVING to filter on an aggregate");
         }
         Aggregate aggregate = parseAggregate();
-        return aggregate != null ? aggregate : parseColumnRef();
+        if (aggregate != null) return aggregate;
+        ColumnRef column = parseColumnRef();
+        return inHaving ? withAlias(column) : column;
     }
 
     private Object parseLiteral() {

@@ -10,7 +10,9 @@ A relational database engine built from scratch in Java, modeled after MySQL.
 - Interactive REPL supporting CREATE TABLE, INSERT, SELECT, UPDATE and DELETE
 - WHERE conditions with `=`, `!=`, `<>`, `>`, `<`, `>=`, `<=`, combined with AND, OR, NOT and parentheses. NOT binds tightest, then AND, then OR, as in SQL
 - SQL-style NULL logic: comparing an empty cell is *unknown*, so it never matches, not even under NOT
-- Choosing columns in SELECT, qualified as `table.column` and `table.*`
+- Choosing columns in SELECT, qualified as `table.column` and `table.*`, with `AS` aliases that GROUP BY, HAVING and ORDER BY can use
+- `SELECT DISTINCT`, and `COUNT(DISTINCT column)` (also SUM, AVG, MIN, MAX)
+- `IS [NOT] NULL`, `[NOT] IN (...)`, `[NOT] BETWEEN ... AND ...`, `[NOT] LIKE 'pattern'`
 - JOIN: `INNER JOIN` and `LEFT [OUTER] JOIN ... ON`, chained, with table aliases (`users u` or `users AS u`), including self joins
 - Comparing two columns (`ON u.id = o.user_id`, `WHERE price > cost`)
 - Name checking like MySQL: unknown columns and tables are errors, and so is a column name found in more than one joined table
@@ -31,6 +33,8 @@ INSERT INTO users VALUES (1, 'Alice Smith', TRUE);
 INSERT INTO users (id, name, active) VALUES (2, 'Bob', FALSE);
 SELECT name, id FROM users WHERE active = TRUE AND id >= 1;
 SELECT * FROM users WHERE (id = 1 OR name = 'Bob') AND NOT active = FALSE;
+SELECT DISTINCT name FROM users WHERE name LIKE 'A%' AND id BETWEEN 1 AND 10 AND active IS NOT NULL;
+SELECT name AS who, COUNT(*) AS n FROM users WHERE id NOT IN (3, 4) GROUP BY who HAVING n > 0 ORDER BY n DESC;
 CREATE TABLE orders (id INTEGER PRIMARY KEY, user_id INTEGER, total FLOAT);
 INSERT INTO orders VALUES (10, 1, 9.5);
 SELECT u.name, o.total FROM users u JOIN orders o ON u.id = o.user_id WHERE o.total > 5;
@@ -56,6 +60,8 @@ Types: `INTEGER` (or `INT`), `VARCHAR` (a length like `VARCHAR(50)` is accepted 
 In a join, `SELECT *` labels every column `table.column` (`u.id`, `o.id`), and chosen columns are labeled as written. ORDER BY compares values the same way WHERE does: numbers by value, text case-sensitively (`Bob` before `alice`), `FALSE` before `TRUE`. Empty cells come first, or last with DESC, as in MySQL, and rows that tie keep their table order. A query runs join → WHERE → GROUP BY → HAVING → sort → LIMIT/OFFSET → choose columns.
 
 Aggregates follow SQL: empty cells are skipped (`COUNT(age)` counts only rows that have an age), `SUM` and `AVG` of no values are empty while `COUNT` is 0, and without GROUP BY the whole result is one row. `SUM` of an INTEGER column is a whole number; `AVG`, and `SUM` of a FLOAT column, are FLOAT. `MIN` and `MAX` work on any column and compare like WHERE (so text is case-sensitive), returning the column's own type. HAVING works like WHERE on the grouped rows: a column it names must be in GROUP BY, an empty aggregate (such as `MIN` of no values) never matches, and without GROUP BY the whole table is one group. Aggregates can't go in WHERE or ON. As in MySQL's default mode, a selected column that isn't inside an aggregate must be in GROUP BY, and `SELECT *` can't be grouped. Aggregates are labeled in upper case as `COUNT(*)` or `SUM(o.total)`, even when written in lower case.
+
+`x BETWEEN a AND b` means `x >= a AND x <= b`, and `x IN (a, b)` means `x = a OR x = b`, as the SQL standard defines them, so `x NOT IN (1, NULL)` matches no row. `IS NULL` is the only test on an empty cell that is never unknown. LIKE uses `%` for any text and `_` for one character, `\` makes the next character literal, and like other text comparisons it is case-sensitive; a pattern with a fixed start (`'Al%'`) on an indexed text column reads an index range. As in MySQL, `AS` is optional (so `SELECT name id` means `name AS id`), an alias wins over a column with the same name in GROUP BY, HAVING and ORDER BY, aliases can't be used in WHERE, and with DISTINCT, ORDER BY can only use selected columns.
 
 Joins are nested loops: without an index each row is compared with every row of the joined table, with an index on the joined column only the matching rows are looked up.
 
