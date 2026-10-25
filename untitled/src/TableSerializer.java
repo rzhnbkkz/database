@@ -70,13 +70,9 @@ public class TableSerializer {
         return sb.append("\"").toString();
     }
 
-    public static void saveToFile(Table table, String path) {
+    public static void saveToFile(Table table, String path) throws IOException {
         try (FileWriter fileWriter = new FileWriter(path)){
-            String input = toJSON(table);
-            fileWriter.write(input);
-        }
-        catch (IOException e) {
-            System.err.println("Error with FileWriter");
+            fileWriter.write(toJSON(table));
         }
     }
 

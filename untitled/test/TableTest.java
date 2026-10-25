@@ -81,6 +81,63 @@ class TableTest {
     }
 
     @Test
+    void insertAcceptsWholeNumberForFloatColumn() {
+        table.insert(new Row(Map.of("score", 7)));
+        assertEquals(7.0f, table.getRows().get(0).get("score"));
+    }
+
+    @Test
+    void updateAcceptsWholeNumberForFloatColumn() {
+        table.insert(new Row(Map.of("id", 1)));
+        table.update(row -> true, Map.of("score", 3));
+        assertEquals(3.0f, table.getRows().get(0).get("score"));
+    }
+
+    @Test
+    void insertedRowsKeepColumnOrder() {
+        table.insert(new Row(Map.of("score", 1.5f, "name", "Alice", "id", 1, "active", true)));
+        assertEquals("{id=1, name=Alice, active=true, score=1.5}", table.getRows().get(0).toString());
+    }
+
+    @Test
+    void floatColumnStillRejectsDouble() {
+        assertThrows(IllegalArgumentException.class, () -> table.insert(new Row(Map.of("score", 1.5))));
+    }
+
+    @Test
+    void insertRejectsUnknownColumn() {
+        IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
+                () -> table.insert(new Row(Map.of("id", 1, "age", 30))));
+        assertEquals("Unknown column 'age'", e.getMessage());
+        assertTrue(table.getRows().isEmpty());
+    }
+
+    @Test
+    void deleteRemovesMatchingRowsAndReturnsCount() {
+        table.insert(new Row(Map.of("id", 1)));
+        table.insert(new Row(Map.of("id", 2)));
+        table.insert(new Row(Map.of("id", 3)));
+
+        assertEquals(2, table.delete(row -> !row.get("id").equals(2)));
+        assertEquals(List.of(2), table.getRows().stream().map(r -> r.get("id")).toList());
+    }
+
+    @Test
+    void updateMergesValuesIntoMatchingRowsAndReturnsCount() {
+        table.insert(new Row(Map.of("id", 1, "name", "Alice")));
+        table.insert(new Row(Map.of("id", 2, "name", "Bob")));
+
+        assertEquals(1, table.update(row -> row.get("id").equals(2), Map.of("name", "Robert", "active", true)));
+        assertEquals("Alice", table.getRows().get(0).get("name"));
+        assertEquals(Map.of("id", 2, "name", "Robert", "active", true), table.getRows().get(1).getData());
+    }
+
+    @Test
+    void updateValidatesValuesEvenWhenNoRowMatches() {
+        assertThrows(IllegalArgumentException.class, () -> table.update(row -> false, Map.of("id", "x")));
+    }
+
+    @Test
     void getRowsAndGetColumnsAreReadOnly() {
         assertThrows(UnsupportedOperationException.class, () -> table.getRows().add(new Row(Map.of())));
         assertThrows(UnsupportedOperationException.class,

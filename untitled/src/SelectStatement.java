@@ -1,18 +1,30 @@
+import java.util.List;
+
 public class SelectStatement implements Statement{
     private String tableName;
-    private Condition condition;
+    private List<String> columns;
+    private List<Condition> conditions;
 
-    public SelectStatement(String tableName, Condition condition) {
+    public SelectStatement(String tableName, List<String> columns, List<Condition> conditions) {
         this.tableName = tableName;
-        this.condition = condition;
+        this.columns = columns;
+        this.conditions = conditions;
+    }
+
+    public SelectStatement(String tableName, List<Condition> conditions) {
+        this(tableName, List.of(), conditions);
     }
 
     public SelectStatement(String tableName) {
-        this(tableName, null);
+        this(tableName, List.of());
     }
 
-    public Condition getCondition() {
-        return condition;
+    public List<String> getColumns() {
+        return columns;
+    }
+
+    public List<Condition> getConditions() {
+        return conditions;
     }
 
     public String getTableName() {
@@ -20,10 +32,6 @@ public class SelectStatement implements Statement{
     }
 
     public void execute(QueryEngine query) {
-        Table table = query.requireTable(tableName);
-        if(condition == null) {
-            System.out.println(query.selectAll(table));
-        }
-        else System.out.println(query.selectWhere(table, condition.getColumn(), condition.getValue()));
+        System.out.println(QueryEngine.select(query.requireTable(tableName), columns, conditions));
     }
 }

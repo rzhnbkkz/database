@@ -8,21 +8,21 @@ class ParserTest {
     void parsesSelectWithoutCondition() {
         SelectStatement s = assertInstanceOf(SelectStatement.class, Parser.parse("SELECT users"));
         assertEquals("users", s.getTableName());
-        assertNull(s.getCondition());
+        assertTrue(s.getConditions().isEmpty());
     }
 
     @Test
     void parsesSelectWithWhereCondition() {
         SelectStatement s = assertInstanceOf(SelectStatement.class, Parser.parse("SELECT users WHERE name=Alice"));
         assertEquals("users", s.getTableName());
-        assertEquals("name", s.getCondition().getColumn());
-        assertEquals("Alice", s.getCondition().getValue());
+        assertEquals("name", s.getConditions().get(0).getColumn());
+        assertEquals("Alice", s.getConditions().get(0).getValue());
     }
 
     @Test
     void keywordsAreCaseInsensitive() {
         SelectStatement s = assertInstanceOf(SelectStatement.class, Parser.parse("select users where id=1"));
-        assertEquals(1, s.getCondition().getValue());
+        assertEquals(1, s.getConditions().get(0).getValue());
         assertInstanceOf(InsertStatement.class, Parser.parse("insert users id=1"));
     }
 
@@ -86,8 +86,8 @@ class ParserTest {
 
     @Test
     void rejectsUnknownCommand() {
-        IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> Parser.parse("DELETE users"));
-        assertEquals("Command DELETE is unrecognized", e.getMessage());
+        IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> Parser.parse("DROP users"));
+        assertEquals("Command DROP is unrecognized", e.getMessage());
     }
 
     @Test
@@ -95,6 +95,13 @@ class ParserTest {
         IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
                 () -> Parser.parse("INSERT users name"));
         assertEquals("Expected key=value, got: name", e.getMessage());
+    }
+
+    @Test
+    void rejectsUnexpectedTokensInSelect() {
+        IllegalArgumentException e = assertThrows(IllegalArgumentException.class,
+                () -> Parser.parse("SELECT users WHERE id=1 name=Bob"));
+        assertEquals("Unexpected name=Bob after condition, expected AND", e.getMessage());
     }
 
     @Test
