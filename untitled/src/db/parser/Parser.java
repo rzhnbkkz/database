@@ -33,13 +33,14 @@ import java.util.*;
 //
 //   statement := (select | insert | update | delete | create | createIdx | dropIdx | showIdx | explain
 //                 | save | load) [';']
-//   select    := SELECT ('*' | item {',' item}) FROM table {join} [where] [groupBy] [orderBy] [limit]
+//   select    := SELECT ('*' | item {',' item}) FROM table {join} [where] [groupBy] [having] [orderBy] [limit]
 //   item      := aggregate | column | name '.' '*'
-//   aggregate := COUNT '(' ('*' | column) ')' | (SUM | AVG) '(' column ')'
+//   aggregate := COUNT '(' ('*' | column) ')' | (SUM | AVG | MIN | MAX) '(' column ')'
 //   column    := name ['.' name]          table.column, where table may be an alias
 //   table     := name [[AS] name]         the optional second name is an alias
 //   join      := [INNER | LEFT [OUTER]] JOIN table ON or
 //   groupBy   := GROUP BY column {',' column}
+//   having    := HAVING or                in HAVING, either side of a comparison may be an aggregate
 //   orderBy   := ORDER BY sortItem {',' sortItem}
 //   sortItem  := (aggregate | column) [ASC | DESC]
 //   limit     := LIMIT count [OFFSET count] | LIMIT count ',' count    (the second: LIMIT offset, count)
@@ -57,11 +58,14 @@ import java.util.*;
 //   where     := WHERE or
 //   or        := and {OR and}             OR binds loosest, so a AND b OR c is (a AND b) OR c
 //   and       := not {AND not}
-//   not       := NOT not | '(' or ')' | column op (literal | column)
+//   not       := NOT not | '(' or ')' | operand op (literal | operand)
+//   operand   := column, or in HAVING also aggregate
 //   literal   := STRING | ['-'] NUMBER | TRUE | FALSE | NULL
 public class Parser {
     private final List<Token> tokens;
     private int index = 0;
+    // Set while parsing HAVING, the only place a condition may use an aggregate
+    private boolean inHaving = false;
 
     private Parser(List<Token> tokens) {
         this.tokens = tokens;
@@ -119,6 +123,13 @@ public class Parser {
             } while (acceptSymbol(","));
         }
 
+        Expression having = Expression.ALL_ROWS;
+        if (acceptKeyword("HAVING")) {
+            inHaving = true;
+            having = parseOr();
+            inHaving = false;
+        }
+
         List<OrderBy> orderBy = new ArrayList<>();
         if (acceptKeyword("ORDER")) {
             expectKeyword("BY");
@@ -143,7 +154,7 @@ public class Parser {
                 limit = parseCount("LIMIT");
             }
         }
-        return new SelectStatement(new SelectQuery(from, joins, columns, where, groupBy, orderBy, limit, offset));
+        return new SelectStatement(new SelectQuery(from, joins, columns, where, groupBy, having, orderBy, limit, offset));
     }
 
     // A whole number, zero or more, for LIMIT and OFFSET
@@ -178,7 +189,7 @@ public class Parser {
         try {
             function = Aggregate.Function.valueOf(name.text().toUpperCase());
         } catch (IllegalArgumentException e) {
-            throw new IllegalArgumentException("Unknown function " + name.text() + ", expected COUNT, SUM or AVG");
+            throw new IllegalArgumentException("Unknown function " + name.text() + ", expected COUNT, SUM, AVG, MIN or MAX");
         }
         index += 2;
         Aggregate aggregate = function == Aggregate.Function.COUNT && acceptSymbol("*")
@@ -377,11 +388,7 @@ public class Parser {
     }
 
     private Condition parseCondition() {
-        if (peek().type() == TokenType.IDENTIFIER && tokens.get(index + 1).isSymbol("(")) {
-            throw new IllegalArgumentException(peek().text() + "(...) can't be used in WHERE or ON, "
-                    + "conditions compare columns with values");
-        }
-        ColumnRef column = parseColumnRef();
+        SelectItem column = parseOperand();
         Token token = peek();
         Condition.Operator operator;
         if (token.type() != TokenType.SYMBOL) throw expected("a comparison (= != <> < > <= >=)");
@@ -395,8 +402,18 @@ public class Parser {
         }
         index++;
         // A name on the right compares two columns: u.id = o.user_id
-        if (peek().type() == TokenType.IDENTIFIER) return new Condition(column, operator, parseColumnRef());
+        if (peek().type() == TokenType.IDENTIFIER) return new Condition(column, operator, parseOperand());
         return new Condition(column, operator, parseLiteral());
+    }
+
+    // A column, or in HAVING an aggregate
+    private SelectItem parseOperand() {
+        if (peek().type() == TokenType.IDENTIFIER && tokens.get(index + 1).isSymbol("(") && !inHaving) {
+            throw new IllegalArgumentException(peek().text() + "(...) can't be used in WHERE or ON, "
+                    + "use HAVING to filter on an aggregate");
+        }
+        Aggregate aggregate = parseAggregate();
+        return aggregate != null ? aggregate : parseColumnRef();
     }
 
     private Object parseLiteral() {

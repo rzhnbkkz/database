@@ -22,6 +22,10 @@ public record Or(List<Expression> parts) implements Expression {
         return new Or(parts.stream().map(part -> part.resolve(scope)).toList());
     }
 
+    public List<SelectItem> items() {
+        return parts.stream().flatMap(part -> part.items().stream()).toList();
+    }
+
     public int precedence() {
         return 1;
     }

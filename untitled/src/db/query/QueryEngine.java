@@ -80,7 +80,7 @@ public class QueryEngine {
     // Everything a SELECT needs, with names checked and indexes chosen, before touching any rows.
     // grouped is true with GROUP BY or any aggregate. aggregates are keyed by the row key their result gets.
     private record Plan(Scope scope, List<Access> accesses, List<Expression> conditions, Expression filter,
-                        boolean grouped, List<ColumnRef> groupBy, Map<String, Aggregate> aggregates,
+                        boolean grouped, List<ColumnRef> groupBy, Expression having, Map<String, Aggregate> aggregates,
                         List<OrderBy> order, Map<String, String> output) {}
 
     private Plan plan(SelectQuery query) {
@@ -99,6 +99,8 @@ public class QueryEngine {
         }
         Expression filter = query.where().resolve(scope);
         List<ColumnRef> groupBy = query.groupBy().stream().map(scope::resolve).toList();
+        // Kept as ALL_ROWS when absent, so "is there a HAVING?" stays a simple check
+        Expression having = query.having() == Expression.ALL_ROWS ? Expression.ALL_ROWS : query.having().resolve(scope);
         // ORDER BY may name any column of the tables, not only selected ones
         List<OrderBy> order = query.orderBy().stream().map(item -> item.resolve(scope)).toList();
 
@@ -107,21 +109,24 @@ public class QueryEngine {
         for (SelectItem item : query.columns()) {
             if (item instanceof Aggregate aggregate) {
                 Aggregate resolved = aggregate.resolve(scope);
-                aggregates.put(resolved.toString(), resolved);
-                output.put(aggregate.toString(), resolved.toString());
+                aggregates.put(resolved.key(), resolved);
+                output.put(aggregate.toString(), resolved.key());
             } else if (((ColumnRef) item).isStar()) {
                 for (ColumnRef ref : scope.columns(((ColumnRef) item).table())) output.put(ref.key(), ref.key());
             } else {
                 output.put(item.toString(), scope.resolve((ColumnRef) item).key());
             }
         }
-        for (OrderBy item : order) {
-            if (item.item() instanceof Aggregate aggregate) aggregates.put(aggregate.toString(), aggregate);
+        // Aggregates used only by HAVING or ORDER BY are computed too
+        List<SelectItem> used = new ArrayList<>(having.items());
+        for (OrderBy item : order) used.add(item.item());
+        for (SelectItem item : used) {
+            if (item instanceof Aggregate aggregate) aggregates.put(aggregate.key(), aggregate);
         }
 
         // As in MySQL's default mode: once rows are grouped, a plain column only has one value per
         // group if it's one of the GROUP BY columns
-        boolean grouped = !groupBy.isEmpty() || !aggregates.isEmpty();
+        boolean grouped = !groupBy.isEmpty() || !aggregates.isEmpty() || having != Expression.ALL_ROWS;
         if (grouped) {
             if (query.columns().isEmpty()) {
                 throw new IllegalArgumentException("SELECT * can't be used with GROUP BY or aggregates, list the columns instead");
@@ -132,8 +137,8 @@ public class QueryEngine {
                     throw notGrouped(entry.getKey());
                 }
             }
-            for (OrderBy item : order) {
-                if (item.item() instanceof ColumnRef column && !groupKeys.contains(column.key())) throw notGrouped(column.key());
+            for (SelectItem item : used) {
+                if (item instanceof ColumnRef column && !groupKeys.contains(column.key())) throw notGrouped(column.key());
             }
         }
 
@@ -148,16 +153,16 @@ public class QueryEngine {
                     IndexLookup.find(tables.get(i + 1), ref.alias(), true, conditions.get(i), earlier)));
             earlier.add(ref.alias());
         }
-        return new Plan(scope, accesses, conditions, filter, grouped, groupBy, aggregates, order, output);
+        return new Plan(scope, accesses, conditions, filter, grouped, groupBy, having, aggregates, order, output);
     }
 
     private static IllegalArgumentException notGrouped(String column) {
-        return new IllegalArgumentException("Column '" + column + "' must be in GROUP BY, or inside COUNT, SUM or AVG");
+        return new IllegalArgumentException("Column '" + column + "' must be in GROUP BY, or inside an aggregate like COUNT or MAX");
     }
 
     // A full SELECT. Rows from a single table keep plain column names; joined rows are keyed
     // alias.column. Chosen columns are labeled as written (u.name stays u.name, sum(total) is SUM(total)).
-    // Steps: join, WHERE, group, sort, LIMIT/OFFSET, and only then pick the columns, so ORDER BY
+    // Steps: join, WHERE, group, HAVING, sort, LIMIT/OFFSET, and only then pick the columns, so ORDER BY
     // can use a column that isn't selected.
     public List<Row> select(SelectQuery query) {
         Plan plan = plan(query);
@@ -172,7 +177,10 @@ public class QueryEngine {
         for (Row row : rows) {
             if (plan.filter().matches(row)) matching.add(row);
         }
-        if (plan.grouped()) matching = group(matching, plan);
+        if (plan.grouped()) {
+            matching = group(matching, plan);
+            matching.removeIf(row -> !plan.having().matches(row));
+        }
         // List.sort is stable, so rows that tie keep their table order
         if (!plan.order().isEmpty()) matching.sort(comparator(plan.order()));
         int start = Math.min(query.offset(), matching.size());
@@ -235,6 +243,7 @@ public class QueryEngine {
         } else if (plan.grouped()) {
             lines.add("aggregate all rows into one");
         }
+        if (plan.having() != Expression.ALL_ROWS) lines.add("having " + plan.having());
         if (!plan.order().isEmpty()) {
             lines.add("sort by " + plan.order().stream().map(OrderBy::toString).collect(Collectors.joining(", ")));
         }
@@ -249,7 +258,7 @@ public class QueryEngine {
         Comparator<Row> result = null;
         for (OrderBy item : order) {
             // An aggregate's result is stored under its name, like COUNT(*)
-            String key = item.item() instanceof ColumnRef column ? column.key() : item.item().toString();
+            String key = item.item().key();
             Comparator<Row> byColumn = (a, b) -> compareForSort(a.get(key), b.get(key));
             if (item.descending()) byColumn = byColumn.reversed();
             result = result == null ? byColumn : result.thenComparing(byColumn);

@@ -55,6 +55,10 @@ public class SelectStatement implements Statement{
         return query.groupBy();
     }
 
+    public Expression getHaving() {
+        return query.having();
+    }
+
     public List<OrderBy> getOrderBy() {
         return query.orderBy();
     }

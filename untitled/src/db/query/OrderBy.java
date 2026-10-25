@@ -4,8 +4,7 @@ package db.query;
 public record OrderBy(SelectItem item, boolean descending) {
 
     public OrderBy resolve(Scope scope) {
-        return new OrderBy(item instanceof Aggregate aggregate ? aggregate.resolve(scope) : scope.resolve((ColumnRef) item),
-                descending);
+        return new OrderBy(item.resolve(scope), descending);
     }
 
     @Override

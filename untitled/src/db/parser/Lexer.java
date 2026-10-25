@@ -12,7 +12,7 @@ public class Lexer {
             "SELECT", "FROM", "WHERE", "AND", "OR", "NOT",
             "INSERT", "INTO", "VALUES", "UPDATE", "SET", "DELETE",
             "CREATE", "TABLE", "PRIMARY", "KEY",
-            "JOIN", "INNER", "LEFT", "OUTER", "ON", "AS", "ORDER", "BY", "LIMIT", "GROUP",
+            "JOIN", "INNER", "LEFT", "OUTER", "ON", "AS", "ORDER", "BY", "LIMIT", "GROUP", "HAVING",
             "TRUE", "FALSE", "NULL");
 
     private final String input;

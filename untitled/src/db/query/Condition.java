@@ -2,6 +2,8 @@ package db.query;
 
 import db.model.Row;
 
+import java.util.List;
+
 public class Condition implements Expression {
     public enum Operator {
         EQUALS("="), NOT_EQUALS("!="), GREATER(">"), LESS("<"), GREATER_OR_EQUAL(">="), LESS_OR_EQUAL("<=");
@@ -24,12 +26,13 @@ public class Condition implements Expression {
         }
     }
 
-    private ColumnRef column;
+    // A column, or in HAVING also an aggregate (COUNT(*) > 1)
+    private SelectItem column;
     private Operator operator;
-    // A literal, or a ColumnRef to compare two columns (u.id = o.user_id)
+    // A literal, a ColumnRef to compare two columns (u.id = o.user_id), or in HAVING an aggregate
     private Object value;
 
-    public Condition(ColumnRef column, Operator operator, Object value) {
+    public Condition(SelectItem column, Operator operator, Object value) {
         this.column = column;
         this.operator = operator;
         this.value = value;
@@ -47,7 +50,7 @@ public class Condition implements Expression {
         return column.key();
     }
 
-    public ColumnRef getColumnRef() {
+    public SelectItem getLeft() {
         return column;
     }
 
@@ -61,7 +64,7 @@ public class Condition implements Expression {
 
     public Boolean evaluate(Row row) {
         Object cell = row.get(column.key());
-        Object other = value instanceof ColumnRef ref ? row.get(ref.key()) : value;
+        Object other = value instanceof SelectItem item ? row.get(item.key()) : value;
         // Like SQL NULL, comparing an empty cell is unknown, so it never matches, even with NOT
         if (cell == null || other == null) return null;
         Integer cmp = compare(cell, other);
@@ -93,9 +96,13 @@ public class Condition implements Expression {
                 throw new IllegalArgumentException("Unknown column '" + ref.column()
                         + "' (to compare with text, put it in quotes: '" + ref.column() + "')");
             }
-            resolved = scope.resolve(ref);
         }
-        return new Condition(scope.resolve(column), operator, resolved);
+        if (value instanceof SelectItem item) resolved = item.resolve(scope);
+        return new Condition(column.resolve(scope), operator, resolved);
+    }
+
+    public List<SelectItem> items() {
+        return value instanceof SelectItem item ? List.of(column, item) : List.of(column);
     }
 
     public int precedence() {

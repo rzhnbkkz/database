@@ -25,10 +25,12 @@ public record IndexLookup(Index index, Condition condition, Object value) {
         if (!(expression instanceof Condition condition) || condition.getOperator() != Condition.Operator.EQUALS) {
             return null;
         }
+        // Aggregates only appear in HAVING, which runs after the rows are read
+        if (!(condition.getLeft() instanceof ColumnRef left) || condition.getValue() instanceof Aggregate) return null;
         // Either side may be this table's column: u.id = o.user_id and o.user_id = u.id both work
-        IndexLookup lookup = tryColumn(table, alias, qualified, condition, condition.getColumnRef(), condition.getValue(), earlier);
+        IndexLookup lookup = tryColumn(table, alias, qualified, condition, left, condition.getValue(), earlier);
         if (lookup == null && condition.getValue() instanceof ColumnRef right) {
-            lookup = tryColumn(table, alias, qualified, condition, right, condition.getColumnRef(), earlier);
+            lookup = tryColumn(table, alias, qualified, condition, right, left, earlier);
         }
         return lookup;
     }

@@ -16,6 +16,9 @@ public interface Expression {
     // The same expression with every column checked against the scope and turned into its row key
     Expression resolve(Scope scope);
 
+    // Every column and aggregate it mentions, so HAVING can be checked and its aggregates computed
+    List<SelectItem> items();
+
     default boolean matches(Row row) {
         return Boolean.TRUE.equals(evaluate(row));
     }

@@ -96,13 +96,13 @@ class AggregateTest {
 
     @Test
     void unknownFunctionsAreNamed() {
-        assertEquals("Unknown function MAX, expected COUNT, SUM or AVG",
-                assertThrows(IllegalArgumentException.class, () -> Parser.parse("SELECT MAX(age) FROM users")).getMessage());
+        assertEquals("Unknown function MEDIAN, expected COUNT, SUM, AVG, MIN or MAX",
+                assertThrows(IllegalArgumentException.class, () -> Parser.parse("SELECT MEDIAN(age) FROM users")).getMessage());
     }
 
     @Test
     void aggregatesAreNotAllowedInConditions() {
-        assertEquals("COUNT(...) can't be used in WHERE or ON, conditions compare columns with values",
+        assertEquals("COUNT(...) can't be used in WHERE or ON, use HAVING to filter on an aggregate",
                 assertThrows(IllegalArgumentException.class,
                         () -> Parser.parse("SELECT * FROM users WHERE COUNT(*) > 1")).getMessage());
         assertThrows(IllegalArgumentException.class,
@@ -255,11 +255,11 @@ class AggregateTest {
 
     @Test
     void plainColumnsMustBeGrouped() {
-        assertEquals("Column 'name' must be in GROUP BY, or inside COUNT, SUM or AVG", fails("SELECT name, COUNT(*) FROM users"));
-        assertEquals("Column 'name' must be in GROUP BY, or inside COUNT, SUM or AVG", fails("SELECT name, city FROM users GROUP BY city"));
-        assertEquals("Column 'age' must be in GROUP BY, or inside COUNT, SUM or AVG",
+        assertEquals("Column 'name' must be in GROUP BY, or inside an aggregate like COUNT or MAX", fails("SELECT name, COUNT(*) FROM users"));
+        assertEquals("Column 'name' must be in GROUP BY, or inside an aggregate like COUNT or MAX", fails("SELECT name, city FROM users GROUP BY city"));
+        assertEquals("Column 'age' must be in GROUP BY, or inside an aggregate like COUNT or MAX",
                 fails("SELECT city FROM users GROUP BY city ORDER BY age"));
-        assertEquals("Column 'u.id' must be in GROUP BY, or inside COUNT, SUM or AVG",
+        assertEquals("Column 'u.id' must be in GROUP BY, or inside an aggregate like COUNT or MAX",
                 fails("SELECT u.* FROM users u JOIN orders o ON u.id = o.user_id GROUP BY u.name"));
     }
 

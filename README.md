@@ -17,7 +17,8 @@ A relational database engine built from scratch in Java, modeled after MySQL.
 - Values: numbers, `TRUE`/`FALSE`, `NULL` and quoted text (`'Bob Smith'`, `"Bob Smith"`, `'O''Brien'`)
 - Keywords can be used as names in backticks (`` `from` ``)
 - ORDER BY on one or more columns, ASC or DESC, including columns that aren't selected; LIMIT with OFFSET (or MySQL's `LIMIT offset, count`)
-- Aggregates `COUNT(*)`, `COUNT(column)`, `SUM`, `AVG` with `GROUP BY` on one or more columns; ORDER BY can sort by an aggregate
+- Aggregates `COUNT(*)`, `COUNT(column)`, `SUM`, `AVG`, `MIN`, `MAX` with `GROUP BY` on one or more columns; ORDER BY can sort by an aggregate
+- HAVING to filter groups, comparing aggregates and GROUP BY columns with values or each other (`HAVING MAX(age) > AVG(age)`)
 - Indexes: `CREATE INDEX`, `DROP INDEX`, `SHOW INDEX`, plus an automatic `PRIMARY` index on the primary key. They speed up `column = value` in WHERE (SELECT, UPDATE, DELETE) and the joined table's side of `ON a.x = b.y`
 - `EXPLAIN SELECT ...` shows, per table, whether it is read with an index or a full scan
 - Saving tables to JSON files and loading them back (SAVE / LOAD), including their indexes
@@ -35,7 +36,7 @@ SELECT u.name, o.total FROM users u JOIN orders o ON u.id = o.user_id WHERE o.to
 SELECT name, o.id FROM users u LEFT JOIN orders o ON u.id = o.user_id;
 SELECT u.name, o.total FROM users u JOIN orders o ON u.id = o.user_id ORDER BY o.total DESC, u.name LIMIT 10 OFFSET 20;
 SELECT u.name, COUNT(o.id), SUM(o.total) FROM users u LEFT JOIN orders o ON u.id = o.user_id
-  GROUP BY u.name ORDER BY SUM(o.total) DESC;
+  GROUP BY u.name HAVING COUNT(o.id) > 0 ORDER BY SUM(o.total) DESC;
 UPDATE users SET active = TRUE, name = 'Bobby' WHERE name = 'Bob';
 DELETE FROM users WHERE id = 2;
 CREATE INDEX idx_user ON orders (user_id);
@@ -47,9 +48,9 @@ EXIT
 ```
 Types: `INTEGER` (or `INT`), `VARCHAR` (a length like `VARCHAR(50)` is accepted but not enforced), `BOOLEAN` (or `BOOL`), `FLOAT`. Keywords are case-insensitive and the trailing `;` is optional. SAVE and LOAD aren't standard SQL; they're this engine's own commands.
 
-In a join, `SELECT *` labels every column `table.column` (`u.id`, `o.id`), and chosen columns are labeled as written. ORDER BY compares values the same way WHERE does: numbers by value, text case-sensitively (`Bob` before `alice`), `FALSE` before `TRUE`. Empty cells come first, or last with DESC, as in MySQL, and rows that tie keep their table order. A query runs join → WHERE → GROUP BY → sort → LIMIT/OFFSET → choose columns.
+In a join, `SELECT *` labels every column `table.column` (`u.id`, `o.id`), and chosen columns are labeled as written. ORDER BY compares values the same way WHERE does: numbers by value, text case-sensitively (`Bob` before `alice`), `FALSE` before `TRUE`. Empty cells come first, or last with DESC, as in MySQL, and rows that tie keep their table order. A query runs join → WHERE → GROUP BY → HAVING → sort → LIMIT/OFFSET → choose columns.
 
-Aggregates follow SQL: empty cells are skipped (`COUNT(age)` counts only rows that have an age), `SUM` and `AVG` of no values are empty while `COUNT` is 0, and without GROUP BY the whole result is one row. `SUM` of an INTEGER column is a whole number; `AVG`, and `SUM` of a FLOAT column, are FLOAT. As in MySQL's default mode, a selected column that isn't inside an aggregate must be in GROUP BY, and `SELECT *` can't be grouped. Aggregates are labeled in upper case as `COUNT(*)` or `SUM(o.total)`, even when written in lower case.
+Aggregates follow SQL: empty cells are skipped (`COUNT(age)` counts only rows that have an age), `SUM` and `AVG` of no values are empty while `COUNT` is 0, and without GROUP BY the whole result is one row. `SUM` of an INTEGER column is a whole number; `AVG`, and `SUM` of a FLOAT column, are FLOAT. `MIN` and `MAX` work on any column and compare like WHERE (so text is case-sensitive), returning the column's own type. HAVING works like WHERE on the grouped rows: a column it names must be in GROUP BY, an empty aggregate (such as `MIN` of no values) never matches, and without GROUP BY the whole table is one group. Aggregates can't go in WHERE or ON. As in MySQL's default mode, a selected column that isn't inside an aggregate must be in GROUP BY, and `SELECT *` can't be grouped. Aggregates are labeled in upper case as `COUNT(*)` or `SUM(o.total)`, even when written in lower case.
 
 Joins are nested loops: without an index each row is compared with every row of the joined table, with an index on the joined column only the matching rows are looked up.
 
@@ -73,5 +74,4 @@ untitled/
 ```
 
 ## Roadmap
-- HAVING, MIN and MAX
 - Range indexes (sorted, for `<` and `>`)

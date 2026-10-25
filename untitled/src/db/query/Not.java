@@ -2,6 +2,8 @@ package db.query;
 
 import db.model.Row;
 
+import java.util.List;
+
 // Flips TRUE and FALSE; unknown stays unknown
 public record Not(Expression part) implements Expression {
 
@@ -12,6 +14,10 @@ public record Not(Expression part) implements Expression {
 
     public Expression resolve(Scope scope) {
         return new Not(part.resolve(scope));
+    }
+
+    public List<SelectItem> items() {
+        return part.items();
     }
 
     public int precedence() {
