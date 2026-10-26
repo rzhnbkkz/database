@@ -32,6 +32,8 @@ public class Database implements Journal, Closeable {
     static final String SNAPSHOT = "snapshot.json";
     static final String LOG = "wal.log";
     static final String LOCK = "lock";
+    // The log size at which the next write first runs a checkpoint, so the log (and replaying it) stays short
+    public static final long DEFAULT_CHECKPOINT_SIZE = 16 * 1024 * 1024;
 
     private final Path dir;
     private final QueryEngine engine = new QueryEngine();
@@ -40,15 +42,26 @@ public class Database implements Journal, Closeable {
     // The LSN of the last change written, in the log or the snapshot
     private long lastLsn = 0;
     private int recovered = 0;
+    private final long checkpointSize;
+    // The log size that triggers the next automatic checkpoint; moved on when one fails, so it's not retried every write
+    private long nextCheckpointAt;
 
-    private Database(Path dir, FileChannel lockChannel, WriteAheadLog log) {
+    private Database(Path dir, FileChannel lockChannel, WriteAheadLog log, long checkpointSize) {
         this.dir = dir;
         this.lockChannel = lockChannel;
         this.log = log;
+        this.checkpointSize = checkpointSize;
+        this.nextCheckpointAt = checkpointSize;
     }
 
     // Opens the folder, creating it if needed, and recovers every change that was acknowledged
     public static Database open(Path dir) throws IOException {
+        return open(dir, DEFAULT_CHECKPOINT_SIZE);
+    }
+
+    // checkpointSize: the log size in bytes at which a checkpoint runs by itself
+    public static Database open(Path dir, long checkpointSize) throws IOException {
+        if (checkpointSize <= 0) throw new IllegalArgumentException("The checkpoint size must be above 0");
         Files.createDirectories(dir);
         FileChannel lockChannel = FileChannel.open(dir.resolve(LOCK), StandardOpenOption.CREATE, StandardOpenOption.WRITE);
         try {
@@ -61,8 +74,10 @@ public class Database implements Journal, Closeable {
         WriteAheadLog log = null;
         try {
             log = new WriteAheadLog(dir.resolve(LOG));
-            Database database = new Database(dir, lockChannel, log);
+            Database database = new Database(dir, lockChannel, log, checkpointSize);
             database.recover();
+            // A long log left by a crash: a checkpoint now makes the next start fast again
+            database.checkpointIfLarge();
             return database;
         } catch (IOException | RuntimeException e) {
             if (log != null) log.close();
@@ -210,6 +225,8 @@ public class Database implements Journal, Closeable {
     }
 
     private void write(String op, String table, String rest) {
+        // Safe here: every earlier change is applied, and this one hasn't changed anything yet
+        checkpointIfLarge();
         long lsn = lastLsn + 1;
         log.append("{\"lsn\": " + lsn + ", \"op\": " + TableSerializer.quote(op) + ", \"table\": " + TableSerializer.quote(table)
                 + (rest == null ? "" : ", " + rest) + "}");
@@ -243,6 +260,23 @@ public class Database implements Journal, Closeable {
             log.clear();
         } catch (IOException e) {
             throw new StorageException("Checkpoint failed, the log still has every change", e);
+        }
+    }
+
+    // A checkpoint once the log reaches the size limit. If it fails, the log still has every change, so the
+    // write goes ahead with a warning, and the next try waits until the log has grown by the limit again.
+    private void checkpointIfLarge() {
+        try {
+            if (log.size() < nextCheckpointAt) return;
+            checkpoint();
+            nextCheckpointAt = checkpointSize;
+        } catch (IOException | StorageException e) {
+            System.out.println("Warning: automatic checkpoint failed, the log keeps growing: " + e.getMessage());
+            try {
+                nextCheckpointAt = log.size() + checkpointSize;
+            } catch (IOException ignored) {
+                nextCheckpointAt += checkpointSize;
+            }
         }
     }
 

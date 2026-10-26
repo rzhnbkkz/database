@@ -267,6 +267,60 @@ class DatabaseTest {
     }
 
     @Test
+    void logIsCheckpointedWhenItReachesTheSizeLimit() throws IOException {
+        Map<String, String> before;
+        long limit = 2000;
+        try (Database database = Database.open(dir, limit)) {
+            run(database.engine(), "CREATE TABLE t (id INTEGER PRIMARY KEY AUTO_INCREMENT, v VARCHAR)");
+            for (int i = 0; i < 200; i++) {
+                run(database.engine(), "INSERT INTO t (v) VALUES ('row " + i + "')");
+                // Never more than the limit plus the one record written after the check
+                assertTrue(Files.size(log()) < limit + 200, "log is " + Files.size(log()) + " bytes");
+            }
+            run(database.engine(), "UPDATE t SET v = 'changed' WHERE id % 7 = 0", "DELETE FROM t WHERE id % 5 = 0");
+            assertTrue(Files.exists(dir.resolve(Database.SNAPSHOT)));
+            before = state(database.engine());
+        }
+        try (Database database = Database.open(dir, limit)) {
+            assertEquals(before, state(database.engine()));
+            assertTrue(database.recoveredChanges() < 30, "replayed " + database.recoveredChanges() + " records");
+        }
+    }
+
+    @Test
+    void failedAutomaticCheckpointDoesNotStopWrites() throws IOException {
+        try (Database database = Database.open(dir, 500)) {
+            run(database.engine(), "CREATE TABLE t (id INTEGER)");
+            // The temporary snapshot can't be created where a folder of that name is
+            Files.createDirectories(dir.resolve(Database.SNAPSHOT + ".tmp").resolve("blocker"));
+            for (int i = 0; i < 40; i++) run(database.engine(), "INSERT INTO t VALUES (" + i + ")");
+            assertEquals(40, database.engine().getTable("t").getRows().size());
+            String out = output.toString();
+            assertTrue(out.contains("Warning: automatic checkpoint failed"), out);
+            // Retried only after the log grew by the limit again, not on every write
+            int warnings = out.split("Warning: automatic checkpoint failed", -1).length - 1;
+            assertTrue(warnings >= 2 && warnings < 10, warnings + " warnings");
+        }
+        Files.delete(dir.resolve(Database.SNAPSHOT + ".tmp").resolve("blocker"));
+        try (Database database = Database.open(dir, 500)) {
+            assertEquals(40, database.engine().getTable("t").getRows().size());
+        }
+    }
+
+    @Test
+    void longLogLeftByACrashIsCheckpointedOnOpen() throws IOException {
+        try (Database database = Database.open(dir)) {
+            run(database.engine(), "CREATE TABLE t (id INTEGER)");
+            for (int i = 0; i < 50; i++) run(database.engine(), "INSERT INTO t VALUES (" + i + ")");
+        }
+        try (Database database = Database.open(dir, 1000)) {
+            assertEquals(51, database.recoveredChanges());
+            assertEquals(0, Files.size(log()));
+            assertEquals(50, database.engine().getTable("t").getRows().size());
+        }
+    }
+
+    @Test
     void checkpointNeedsADataFolder() {
         IllegalArgumentException e = assertThrows(IllegalArgumentException.class, () -> run(new QueryEngine(), "CHECKPOINT"));
         assertEquals("CHECKPOINT needs a data folder, this database is only in memory", e.getMessage());
