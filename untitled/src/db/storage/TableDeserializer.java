@@ -1,5 +1,6 @@
 package db.storage;
 
+import db.model.Change;
 import db.model.Column;
 import db.model.DataType;
 import db.model.Row;
@@ -22,27 +23,17 @@ import java.util.*;
 public class TableDeserializer {
 
     public static Table fromJSON(String json) {
-        Object root = new JsonReader(json).readDocument();
+        return fromJSON(new JsonReader(json).readDocument());
+    }
+
+    // A table already parsed from JSON, such as one inside a snapshot or a log record
+    static Table fromJSON(Object root) {
         Map<String, Object> obj = asObject(root, "table");
 
         String name = asString(require(obj, "name"), "name");
 
         List<Column> columns = new ArrayList<>();
-        for (Object item : asArray(require(obj, "columns"), "columns")) {
-            Map<String, Object> colObj = asObject(item, "column");
-            String colName = asString(require(colObj, "name"), "column name");
-            String typeName = asString(require(colObj, "type"), "column type");
-            DataType type;
-            try {
-                type = DataType.valueOf(typeName.toUpperCase());
-            } catch (IllegalArgumentException e) {
-                throw new IllegalArgumentException("Unknown column type: " + typeName);
-            }
-            boolean primaryKey = flag(colObj, "primaryKey");
-            Column plain = new Column(colName, type, primaryKey);
-            columns.add(new Column(colName, type, primaryKey, flag(colObj, "notNull"), convert(colObj.get("default"), plain),
-                    flag(colObj, "autoIncrement")));
-        }
+        for (Object item : asArray(require(obj, "columns"), "columns")) columns.add(columnFromJSON(item));
 
         Table table = new Table(name, columns);
 
@@ -72,6 +63,16 @@ public class TableDeserializer {
 
         Object rowsValue = obj.get("rows");
         if (rowsValue == null) return table;
+        // From a snapshot: the rows keep their ids, and were checked when they were first written
+        if (obj.containsKey("rowIds")) {
+            List<Object> ids = asArray(obj.get("rowIds"), "rowIds");
+            List<Object> rows = asArray(rowsValue, "rows");
+            if (ids.size() != rows.size()) throw new IllegalArgumentException("Expected one row id per row");
+            Map<Long, Row> byId = new LinkedHashMap<>();
+            for (int i = 0; i < rows.size(); i++) byId.put(asId(ids.get(i)), rowFromJSON(rows.get(i), columns));
+            table.apply(new Change.Insert(byId, table.getNextAutoIncrement()));
+            return table;
+        }
         for (Object item : asArray(rowsValue, "rows")) {
             Map<String, Object> rowObj = asObject(item, "row");
             Map<String, Object> data = new LinkedHashMap<>();
@@ -83,6 +84,44 @@ public class TableDeserializer {
             table.insert(new Row(data));
         }
         return table;
+    }
+
+    static Column columnFromJSON(Object item) {
+        Map<String, Object> colObj = asObject(item, "column");
+        String colName = asString(require(colObj, "name"), "column name");
+        String typeName = asString(require(colObj, "type"), "column type");
+        DataType type;
+        try {
+            type = DataType.valueOf(typeName.toUpperCase());
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException("Unknown column type: " + typeName);
+        }
+        boolean primaryKey = flag(colObj, "primaryKey");
+        Column plain = new Column(colName, type, primaryKey);
+        return new Column(colName, type, primaryKey, flag(colObj, "notNull"), convert(colObj.get("default"), plain),
+                flag(colObj, "autoIncrement"));
+    }
+
+    // A row written by TableSerializer.rowToJSON, with each value turned into its column's type
+    static Row rowFromJSON(Object item, List<Column> columns) {
+        Map<String, Object> rowObj = asObject(item, "row");
+        Map<String, Object> data = new LinkedHashMap<>();
+        for (Column col : columns) {
+            Object value = convert(rowObj.get(col.getName()), col);
+            if (value != null) data.put(col.getName(), value);
+        }
+        for (String key : rowObj.keySet()) {
+            if (columns.stream().noneMatch(col -> col.getName().equals(key))) throw new IllegalArgumentException("Unknown column '" + key + "'");
+        }
+        return new Row(data);
+    }
+
+    // A row id or log sequence number: a whole number, zero or more
+    static long asId(Object value) {
+        if (!(value instanceof BigDecimal n) || n.scale() > 0 || n.signum() < 0) {
+            throw new IllegalArgumentException("Expected a whole number, got " + value);
+        }
+        return n.longValueExact();
     }
 
     // An optional true/false property, false when left out
@@ -123,24 +162,24 @@ public class TableDeserializer {
         throw new IllegalArgumentException("Column '" + colName + "' expects " + col.getDataType() + ", got " + value);
     }
 
-    private static Object require(Map<String, Object> obj, String key) {
+    static Object require(Map<String, Object> obj, String key) {
         if (!obj.containsKey(key)) throw new IllegalArgumentException("Missing field: " + key);
         return obj.get(key);
     }
 
     @SuppressWarnings("unchecked")
-    private static Map<String, Object> asObject(Object value, String what) {
+    static Map<String, Object> asObject(Object value, String what) {
         if (value instanceof Map<?, ?> m) return (Map<String, Object>) m;
         throw new IllegalArgumentException("Expected " + what + " to be a JSON object");
     }
 
     @SuppressWarnings("unchecked")
-    private static List<Object> asArray(Object value, String what) {
+    static List<Object> asArray(Object value, String what) {
         if (value instanceof List<?> l) return (List<Object>) l;
         throw new IllegalArgumentException("Expected " + what + " to be a JSON array");
     }
 
-    private static String asString(Object value, String what) {
+    static String asString(Object value, String what) {
         if (value instanceof String s) return s;
         throw new IllegalArgumentException("Expected " + what + " to be a string");
     }
@@ -149,7 +188,7 @@ public class TableDeserializer {
      * Minimal JSON parser. Produces Map (objects), List (arrays), String,
      * BigDecimal (numbers), Boolean and null.
      */
-    private static class JsonReader {
+    static class JsonReader {
         private final String s;
         private int pos = 0;
 

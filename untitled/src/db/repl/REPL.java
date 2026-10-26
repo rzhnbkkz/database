@@ -3,6 +3,7 @@ package db.repl;
 import db.parser.Parser;
 import db.query.QueryEngine;
 import db.statement.Statement;
+import db.storage.StorageException;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -45,6 +46,9 @@ public class REPL {
         }
         catch (IllegalArgumentException e) {
             System.out.println(e.getMessage());
+        }
+        catch (StorageException e) {
+            System.out.println("Storage error: " + e.getMessage());
         }
         // A bug shouldn't end the session
         catch (RuntimeException e) {

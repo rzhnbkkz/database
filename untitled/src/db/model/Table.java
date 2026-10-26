@@ -33,6 +33,8 @@ public class Table {
     private final Map<String, Index> indexes = new LinkedHashMap<>();
     // The next AUTO_INCREMENT value. Like MySQL, numbers of deleted rows aren't given out again.
     private long nextAutoIncrement = 1;
+    // Every change is written here before it's applied
+    private Journal journal = Journal.NONE;
 
     public Table(String name, List<Column> columns) {
         this.name = name;
@@ -107,13 +109,7 @@ public class Table {
             added.put(id++, row);
         }
         checkUnique(added, true);
-
-        for (Map.Entry<Long, Row> entry : added.entrySet()) {
-            rows.put(entry.getKey(), entry.getValue());
-            for (Index index : indexes.values()) index.add(entry.getKey(), entry.getValue());
-        }
-        nextId = id;
-        nextAutoIncrement = next;
+        write(new Change.Insert(added, next));
         return generated;
     }
 
@@ -124,10 +120,7 @@ public class Table {
     // Only the rows with these ids are tested (every row when null), so an index can narrow the work
     public int delete(Collection<Long> candidates, Predicate<Row> filter) {
         List<Long> matches = matching(candidates, filter);
-        for (long id : matches) {
-            Row row = rows.remove(id);
-            for (Index index : indexes.values()) index.remove(id, row);
-        }
+        if (!matches.isEmpty()) write(new Change.Delete(matches));
         return matches.size();
     }
 
@@ -159,18 +152,12 @@ public class Table {
         if (keyChanged) checkPrimaryKeys(updated);
         checkUnique(updated, false);
 
-        for (Map.Entry<Long, Row> entry : updated.entrySet()) {
-            Row old = rows.get(entry.getKey());
-            for (Index index : indexes.values()) {
-                index.remove(entry.getKey(), old);
-                index.add(entry.getKey(), entry.getValue());
-            }
-            rows.put(entry.getKey(), entry.getValue());
-            // A key set by hand moves the AUTO_INCREMENT counter past it, so a later insert doesn't collide
-            if (keyChanged && primaryKey.isAutoIncrement()) {
-                nextAutoIncrement = Math.max(nextAutoIncrement, (Integer) entry.getValue().get(primaryKey.getName()) + 1L);
-            }
+        // A key set by hand moves the AUTO_INCREMENT counter past it, so a later insert doesn't collide
+        long next = nextAutoIncrement;
+        if (keyChanged && primaryKey.isAutoIncrement()) {
+            for (Row row : updated.values()) next = Math.max(next, (Integer) row.get(primaryKey.getName()) + 1L);
         }
+        if (!updated.isEmpty()) write(new Change.Update(updated, next));
         return matches.size();
     }
 
@@ -248,14 +235,7 @@ public class Table {
         if (checked.isNotNull() && checked.getDefaultValue() == null && !rows.isEmpty()) {
             throw new IllegalArgumentException("Column '" + checked.getName() + "' is NOT NULL, so it needs a DEFAULT for the existing rows");
         }
-        columns.add(checked);
-        if (checked.getDefaultValue() != null) {
-            rows.replaceAll((id, row) -> {
-                Map<String, Object> data = new LinkedHashMap<>(row.getData());
-                data.put(checked.getName(), checked.getDefaultValue());
-                return new Row(data);
-            });
-        }
+        write(new Change.AddColumn(checked));
     }
 
     // ALTER TABLE ... DROP COLUMN. Indexes that use the column go too; returns their names.
@@ -263,25 +243,21 @@ public class Table {
         Column column = requireColumn(columnName);
         if (column.isPrimaryKey()) throw new IllegalArgumentException("Can't drop the primary key column '" + columnName + "'");
         if (columns.size() == 1) throw new IllegalArgumentException("Can't drop the only column of table '" + name + "'");
-        List<String> dropped = new ArrayList<>();
-        indexes.values().removeIf(index -> {
-            if (!index.getColumns().contains(columnName)) return false;
-            dropped.add(index.getName());
-            return true;
-        });
-        columns.remove(column);
-        rows.replaceAll((id, row) -> {
-            Map<String, Object> data = new LinkedHashMap<>(row.getData());
-            data.remove(columnName);
-            return new Row(data);
-        });
+        List<String> dropped = indexes.values().stream()
+                .filter(index -> index.getColumns().contains(columnName)).map(Index::getName).toList();
+        write(new Change.DropColumn(columnName));
         return dropped;
     }
 
     // ALTER TABLE ... RENAME COLUMN a TO b: the data, the primary key and indexes follow the new name
     public void renameColumn(String from, String to) {
-        Column column = requireColumn(from);
+        requireColumn(from);
         if (column(to) != null) throw new IllegalArgumentException("Column '" + to + "' already exists");
+        write(new Change.RenameColumn(from, to));
+    }
+
+    private void applyRenameColumn(String from, String to) {
+        Column column = column(from);
         Column renamed = column.renamed(to);
         columns.set(columns.indexOf(column), renamed);
         if (column == primaryKey) primaryKey = renamed;
@@ -331,10 +307,9 @@ public class Table {
                         + String.join(", ", indexColumns) + ")");
             }
         }
-        Index index = new Index(indexName, indexColumns, types, unique);
-        for (Map.Entry<Long, Row> entry : rows.entrySet()) index.add(entry.getKey(), entry.getValue());
         if (unique) {
             // Existing rows must already be unique
+            Index index = new Index(indexName, indexColumns, types, true);
             Map<List<Object>, Row> seen = new HashMap<>();
             for (Row row : rows.values()) {
                 List<Object> key = index.keyOf(row);
@@ -344,15 +319,103 @@ public class Table {
                 }
             }
         }
-        indexes.put(indexName, index);
+        write(new Change.CreateIndex(indexName, List.copyOf(indexColumns), unique));
     }
 
     public void dropIndex(String indexName) {
         if (indexName.equals(PRIMARY)) {
             throw new IllegalArgumentException("Cannot drop the " + PRIMARY + " index, it belongs to the primary key");
         }
-        if (indexes.remove(indexName) == null) {
+        if (!indexes.containsKey(indexName)) {
             throw new IllegalArgumentException("Index '" + indexName + "' does not exist on table '" + name + "'");
+        }
+        write(new Change.DropIndex(indexName));
+    }
+
+    // A table's rows as they were when a transaction first changed it. Transactions hold only row changes
+    // (schema changes end them), so the rows and counters are all a rollback needs.
+    public record Savepoint(Map<Long, Row> rows, long nextId, long nextAutoIncrement) {}
+
+    public Savepoint savepoint() {
+        return new Savepoint(new LinkedHashMap<>(rows), nextId, nextAutoIncrement);
+    }
+
+    // ROLLBACK: back to the savepoint, with every index rebuilt from the restored rows
+    public void rollbackTo(Savepoint savepoint) {
+        rows.clear();
+        rows.putAll(savepoint.rows());
+        nextId = savepoint.nextId();
+        nextAutoIncrement = savepoint.nextAutoIncrement();
+        indexes.replaceAll((indexName, index) -> {
+            List<DataType> types = index.getColumns().stream().map(c -> column(c).getDataType()).toList();
+            Index rebuilt = new Index(indexName, index.getColumns(), types, index.isUnique());
+            for (Map.Entry<Long, Row> entry : rows.entrySet()) rebuilt.add(entry.getKey(), entry.getValue());
+            return rebuilt;
+        });
+    }
+
+    public void setJournal(Journal journal) {
+        this.journal = journal;
+    }
+
+    // Write-ahead: the change is durable before the table changes, and if writing it fails, nothing changes
+    private void write(Change change) {
+        journal.changed(this, change);
+        apply(change);
+    }
+
+    // Makes a change that write checked, or one read back from a log or snapshot during recovery
+    public void apply(Change change) {
+        if (change instanceof Change.Insert insert) {
+            for (Map.Entry<Long, Row> entry : insert.rows().entrySet()) {
+                rows.put(entry.getKey(), entry.getValue());
+                for (Index index : indexes.values()) index.add(entry.getKey(), entry.getValue());
+                nextId = Math.max(nextId, entry.getKey() + 1);
+            }
+            nextAutoIncrement = insert.nextAutoIncrement();
+        } else if (change instanceof Change.Update update) {
+            for (Map.Entry<Long, Row> entry : update.rows().entrySet()) {
+                Row old = rows.get(entry.getKey());
+                for (Index index : indexes.values()) {
+                    index.remove(entry.getKey(), old);
+                    index.add(entry.getKey(), entry.getValue());
+                }
+                rows.put(entry.getKey(), entry.getValue());
+            }
+            nextAutoIncrement = update.nextAutoIncrement();
+        } else if (change instanceof Change.Delete delete) {
+            for (long id : delete.ids()) {
+                Row row = rows.remove(id);
+                for (Index index : indexes.values()) index.remove(id, row);
+            }
+        } else if (change instanceof Change.AddColumn add) {
+            Column column = add.column();
+            columns.add(column);
+            if (column.getDefaultValue() != null) {
+                rows.replaceAll((id, row) -> {
+                    Map<String, Object> data = new LinkedHashMap<>(row.getData());
+                    data.put(column.getName(), column.getDefaultValue());
+                    return new Row(data);
+                });
+            }
+        } else if (change instanceof Change.DropColumn drop) {
+            String columnName = drop.column();
+            indexes.values().removeIf(index -> index.getColumns().contains(columnName));
+            columns.remove(column(columnName));
+            rows.replaceAll((id, row) -> {
+                Map<String, Object> data = new LinkedHashMap<>(row.getData());
+                data.remove(columnName);
+                return new Row(data);
+            });
+        } else if (change instanceof Change.RenameColumn rename) {
+            applyRenameColumn(rename.from(), rename.to());
+        } else if (change instanceof Change.CreateIndex create) {
+            List<DataType> types = create.columns().stream().map(c -> column(c).getDataType()).toList();
+            Index index = new Index(create.name(), create.columns(), types, create.unique());
+            for (Map.Entry<Long, Row> entry : rows.entrySet()) index.add(entry.getKey(), entry.getValue());
+            indexes.put(create.name(), index);
+        } else if (change instanceof Change.DropIndex drop) {
+            indexes.remove(drop.name());
         }
     }
 
@@ -384,6 +447,11 @@ public class Table {
     // For LOAD: the counter saved with the table, which may be past the biggest key if rows were deleted
     public void restoreNextAutoIncrement(long next) {
         nextAutoIncrement = Math.max(nextAutoIncrement, next);
+    }
+
+    // Rows by their internal id, in table order, for snapshots
+    public Map<Long, Row> getRowsById() {
+        return Collections.unmodifiableMap(rows);
     }
 
     public List<Row> getRows() {

@@ -28,6 +28,8 @@ import db.query.SelectQuery;
 import db.query.Subquery;
 import db.query.TableRef;
 import db.statement.AlterTableStatement;
+import db.statement.CheckpointStatement;
+import db.statement.TransactionStatement;
 import db.statement.CreateIndexStatement;
 import db.statement.CreateStatement;
 import db.statement.DeleteStatement;
@@ -130,6 +132,28 @@ public class Parser {
             }
             case "SAVE" -> parseSave();
             case "LOAD" -> parseLoad();
+            case "CHECKPOINT" -> {
+                index++;
+                yield new CheckpointStatement();
+            }
+            case "BEGIN" -> {
+                index++;
+                yield new TransactionStatement(TransactionStatement.Kind.BEGIN);
+            }
+            case "START" -> {
+                index++;
+                if (!(peek().type() == TokenType.IDENTIFIER && peek().text().equalsIgnoreCase("TRANSACTION"))) throw expected("TRANSACTION");
+                index++;
+                yield new TransactionStatement(TransactionStatement.Kind.BEGIN);
+            }
+            case "COMMIT" -> {
+                index++;
+                yield new TransactionStatement(TransactionStatement.Kind.COMMIT);
+            }
+            case "ROLLBACK" -> {
+                index++;
+                yield new TransactionStatement(TransactionStatement.Kind.ROLLBACK);
+            }
             default -> throw new IllegalArgumentException("Command " + first.text() + " is unrecognized");
         };
         acceptSymbol(";");
