@@ -9,6 +9,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.function.Function;
 import java.util.function.Predicate;
 
@@ -26,8 +27,9 @@ public class Table {
 
     private String name;
     private final List<Column> columns = new ArrayList<>();
-    // Rows by id, in insertion order. Ids never change, so indexes can point at rows.
-    private final Map<Long, Row> rows = new LinkedHashMap<>();
+    // Rows by id. Ids never change, so indexes can point at rows, and new rows get ever higher ids, so id
+    // order is insertion order. Keeping rows sorted by id lets ROLLBACK put deleted rows back in place.
+    private final Map<Long, Row> rows = new TreeMap<>();
     private long nextId = 0;
     private Column primaryKey;
     private final Map<String, Index> indexes = new LinkedHashMap<>();
@@ -332,26 +334,37 @@ public class Table {
         write(new Change.DropIndex(indexName));
     }
 
-    // A table's rows as they were when a transaction first changed it. Transactions hold only row changes
-    // (schema changes end them), so the rows and counters are all a rollback needs.
-    public record Savepoint(Map<Long, Row> rows, long nextId, long nextAutoIncrement) {}
+    // How to undo one row change: the inverse change, and the counters as they were before. Transactions
+    // hold only row changes (schema changes end them), so these are all a rollback needs.
+    public record Undo(Change inverse, long nextId, long nextAutoIncrement) {}
 
-    public Savepoint savepoint() {
-        return new Savepoint(new LinkedHashMap<>(rows), nextId, nextAutoIncrement);
+    // Worked out before the change is applied, from the rows it's about to replace. Costs as much as the
+    // rows the change touches, not the whole table.
+    public Undo undoFor(Change change) {
+        Change inverse;
+        if (change instanceof Change.Insert insert) {
+            inverse = new Change.Delete(List.copyOf(insert.rows().keySet()));
+        } else if (change instanceof Change.Update update) {
+            inverse = new Change.Update(oldRows(update.rows().keySet()), nextAutoIncrement);
+        } else if (change instanceof Change.Delete delete) {
+            inverse = new Change.Insert(oldRows(delete.ids()), nextAutoIncrement);
+        } else {
+            throw new IllegalArgumentException("Only row changes can be undone, not " + change);
+        }
+        return new Undo(inverse, nextId, nextAutoIncrement);
     }
 
-    // ROLLBACK: back to the savepoint, with every index rebuilt from the restored rows
-    public void rollbackTo(Savepoint savepoint) {
-        rows.clear();
-        rows.putAll(savepoint.rows());
-        nextId = savepoint.nextId();
-        nextAutoIncrement = savepoint.nextAutoIncrement();
-        indexes.replaceAll((indexName, index) -> {
-            List<DataType> types = index.getColumns().stream().map(c -> column(c).getDataType()).toList();
-            Index rebuilt = new Index(indexName, index.getColumns(), types, index.isUnique());
-            for (Map.Entry<Long, Row> entry : rows.entrySet()) rebuilt.add(entry.getKey(), entry.getValue());
-            return rebuilt;
-        });
+    private Map<Long, Row> oldRows(Collection<Long> ids) {
+        Map<Long, Row> old = new LinkedHashMap<>();
+        for (long id : ids) old.put(id, rows.get(id));
+        return old;
+    }
+
+    // ROLLBACK, one change at a time, newest first. Indexes are updated like for any other change.
+    public void undo(Undo undo) {
+        apply(undo.inverse());
+        nextId = undo.nextId();
+        nextAutoIncrement = undo.nextAutoIncrement();
     }
 
     public void setJournal(Journal journal) {

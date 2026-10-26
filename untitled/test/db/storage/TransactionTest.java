@@ -89,6 +89,27 @@ class TransactionTest {
     }
 
     @Test
+    void rollbackUndoesChangesToTheSameRowsNewestFirst() {
+        QueryEngine engine = new QueryEngine();
+        run(engine, USERS);
+        Map<String, String> before = state(engine);
+        // The same rows changed several times, and rows inserted and deleted within the transaction
+        run(engine, "BEGIN",
+                "UPDATE users SET age = 1 WHERE name = 'Bob'",
+                "UPDATE users SET age = 2, name = 'Robert' WHERE id = 2",
+                "INSERT INTO users (name, age) VALUES ('Dan', 50), ('Eve', 60)",
+                "UPDATE users SET age = age + 100",
+                "DELETE FROM users WHERE name = 'Dan' OR id = 2",
+                "INSERT INTO users (name) VALUES ('Bob')",
+                "DELETE FROM users WHERE age > 0",
+                "ROLLBACK");
+        assertEquals(before, state(engine));
+        // Bob is back between Alice and Carol, where he was, not at the end
+        assertEquals(List.of(1, 2, 3), ids(engine, "age > 0"));
+        assertEquals(List.of(2), ids(engine, "name = 'Bob'"));
+    }
+
+    @Test
     void failedStatementLeavesTheTransactionOpen() throws IOException {
         try (Database database = Database.open(dir)) {
             QueryEngine engine = database.engine();

@@ -13,11 +13,12 @@ public class QueryEngine {
     private HashMap<String, Table> tablesMap = new LinkedHashMap<>();
     // Where every change is written before it happens; nowhere for an in-memory database
     private Journal journal = Journal.NONE;
-    // The open transaction: each table it changed, as it was before. null outside a transaction.
-    private Map<Table, Table.Savepoint> transaction = null;
+    // The open transaction: how to undo each change it made, oldest first. null outside a transaction.
+    private record Undo(Table table, Table.Undo undo) {}
+    private List<Undo> transaction = null;
 
-    // What tables write their changes to. Inside a transaction, a row change first saves the table's rows
-    // (the first time the transaction changes it) so ROLLBACK can put them back. A schema change commits the
+    // What tables write their changes to. Inside a transaction, a row change first records how to undo it,
+    // so ROLLBACK can put the rows back. A schema change commits the
     // transaction first, as in MySQL, so transactions only ever hold row changes. The change has passed its
     // checks but isn't applied yet, so the commit holds exactly the transaction's changes.
     private final Journal tableJournal = new Journal() {
@@ -27,7 +28,7 @@ public class QueryEngine {
                 boolean rowChange = change instanceof Change.Insert || change instanceof Change.Update || change instanceof Change.Delete;
                 // QueryEngine's commit, not this Journal's own
                 if (!rowChange) QueryEngine.this.commit();
-                else if (!transaction.containsKey(table)) transaction.put(table, table.savepoint());
+                else transaction.add(new Undo(table, table.undoFor(change)));
             }
             journal.changed(table, change);
         }
@@ -49,7 +50,7 @@ public class QueryEngine {
     public void begin() {
         if (inTransaction()) commit();
         journal.begin();
-        transaction = new HashMap<>();
+        transaction = new ArrayList<>();
     }
 
     public boolean inTransaction() {
@@ -82,7 +83,7 @@ public class QueryEngine {
     }
 
     private void undo() {
-        for (Map.Entry<Table, Table.Savepoint> entry : transaction.entrySet()) entry.getKey().rollbackTo(entry.getValue());
+        for (int i = transaction.size() - 1; i >= 0; i--) transaction.get(i).table().undo(transaction.get(i).undo());
         transaction = null;
     }
 

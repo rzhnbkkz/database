@@ -164,7 +164,7 @@ Outside a transaction every statement is its own (autocommit). `BEGIN` groups th
 - `COMMIT` or `ROLLBACK` with no transaction open does nothing. Leaving the REPL with a transaction open rolls it back.
 - If writing the commit fails, the transaction is rolled back, so the tables never hold changes the log doesn't.
 - There's one session, so there's nothing to isolate from: no locks, and no other connection that could see uncommitted rows.
-- The first change a transaction makes to a table copies that table's list of rows (not the rows themselves), and a rollback rebuilds its indexes. Both take time in proportion to the table's size.
+- Each row change inside a transaction records its inverse first: the ids to delete for an INSERT, the old rows for an UPDATE or DELETE. `ROLLBACK` applies them newest first, updating indexes as it goes. Both cost time in proportion to the rows changed, not the size of the table. Rows are kept in id order, which is insertion order, so deleted rows go back to where they were.
 
 ## Subqueries
 - A name the subquery's own tables don't have is looked up in the outer query, so `o.user_id = u.id` uses the outer row's `u.id`. This also works from subqueries nested deeper.
