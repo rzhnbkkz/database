@@ -4,6 +4,9 @@ target/
 *.class
 *.jar
 
+# Data folders made by running the REPL
+data/
+
 # IntelliJ
 .idea/
 *.iml

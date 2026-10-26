@@ -24,7 +24,8 @@ Input a command or type EXIT to exit: SELECT id, name, city FROM users;
 - **Expressions**: arithmetic, `CASE`, and 14 functions (`UPPER`, `CONCAT`, `ROUND`, `COALESCE`, ...)
 - **Indexes**: single and multi-column, `UNIQUE`, used for `=`, ranges, joins and `ORDER BY`, with `EXPLAIN` to see the plan
 - **Schema**: primary keys, `AUTO_INCREMENT`, `NOT NULL`, `DEFAULT`, and type checks before any row is read
-- **Persistence**: `SAVE` and `LOAD` tables as JSON
+- **Durability**: a write-ahead log in a data folder, so every acknowledged write survives a crash, with checkpoints and recovery on startup
+- **Import and export**: `SAVE` and `LOAD` single tables as JSON
 - **Errors that point at the problem**: `Expected FROM, got 'users' at position 10`
 
 ## Build and run
@@ -32,7 +33,8 @@ Requires Java 17 or newer and Maven.
 ```
 mvn test                       # run the tests
 mvn package                    # build target/database.jar
-java -jar target/database.jar  # start the REPL
+java -jar target/database.jar  # start the REPL on the data folder ./data
+java -jar target/database.jar mydb   # or on another folder
 ```
 
 ## Example session
@@ -60,7 +62,8 @@ SELECT name, (SELECT COUNT(*) FROM orders o WHERE o.user_id = u.id) AS orders FR
 CREATE INDEX idx_user_total ON orders (user_id, total);
 EXPLAIN SELECT * FROM orders WHERE user_id = 1 AND total > 5;
 
--- Saving
+-- Saving (every write is already in the data folder's log)
+CHECKPOINT;
 SAVE users 'users.json';
 LOAD 'users.json';
 EXIT
@@ -83,7 +86,8 @@ More statements are listed below.
 | `DELETE FROM t [WHERE ...]` | |
 | `CREATE [UNIQUE] INDEX name ON t (col, ...)`, `DROP INDEX name ON t`, `SHOW INDEX FROM t` | |
 | `EXPLAIN SELECT ...` | shows, per table, whether an index or a full scan is used |
-| `SAVE t 'file.json'`, `LOAD 'file.json'` | this engine's own commands, not standard SQL |
+| `CHECKPOINT` | writes a snapshot of every table and empties the log; also runs on `EXIT` |
+| `SAVE t 'file.json'`, `LOAD 'file.json'` | export and import one table; this engine's own commands, not standard SQL |
 
 **Conditions**: `=`, `!=`, `<>`, `<`, `>`, `<=`, `>=`, `IS [NOT] NULL`, `[NOT] IN (...)`, `[NOT] BETWEEN ... AND ...`, `[NOT] LIKE`, `[NOT] EXISTS`, combined with `AND`, `OR`, `NOT` and parentheses. NOT binds tightest, then AND, then OR.
 
@@ -138,6 +142,17 @@ Expressions work everywhere a value goes: the select list, WHERE / ON / HAVING, 
 - ALTER TABLE: a new NOT NULL column needs a DEFAULT when the table has rows. Dropping a column also drops every index that uses it. The primary key column can't be dropped.
 - SAVE stores a table's indexes, column options and AUTO_INCREMENT counter along with its rows.
 
+## Durability
+The database lives in a data folder (`./data` unless you name another one) holding two files: `snapshot.json`, every table as of a log sequence number (LSN), and `wal.log`, every change since.
+- **Write-ahead**: each write is checked first, then written to `wal.log` as one record and forced to disk (fsync), and only then applied and acknowledged. If the write to the log fails, the table doesn't change. A statement is one record, so a multi-row INSERT or an UPDATE of many rows comes back whole or not at all.
+- **Row changes, not SQL**: a record holds the statement's effect: the inserted rows, the new version of each updated row, the ids of deleted rows, or the schema change. Recovery re-applies these through the same code as the original write, without re-running any query.
+- **Recovery**: opening the folder loads the snapshot, then replays the log records after its LSN. Each record carries a CRC32 checksum. An incomplete last record, left by a crash during a write, was never acknowledged, so it's dropped. A damaged record with good ones after it means corruption, and the folder isn't opened rather than losing those records.
+- **Checkpoints**: `CHECKPOINT` (also run on `EXIT`) writes a new snapshot to a temporary file, renames it into place, and empties the log. A crash before the rename leaves the old snapshot. A crash after it leaves log records the snapshot already holds, which the LSN check skips, so no change is applied twice.
+- **Row ids**: rows have internal ids that indexes and log records use. The snapshot keeps them, unlike `SAVE` files, which get new ids when loaded.
+- **One process at a time**: a lock file stops a second process from opening the same folder.
+- **Cost**: the fsync dominates, at about 4 ms per write statement on a laptop SSD. A multi-row INSERT pays it once for all its rows. Reopening 2,000 rows from a snapshot takes about 40 ms.
+- **Not yet**: the log only empties at a checkpoint, so a long session grows it until `CHECKPOINT` or `EXIT`. There are no multi-statement transactions (`BEGIN` / `COMMIT`); each statement is its own.
+
 ## Subqueries
 - A name the subquery's own tables don't have is looked up in the outer query, so `o.user_id = u.id` uses the outer row's `u.id`. This also works from subqueries nested deeper.
 - A subquery used as a value, or after IN, selects one column. As a value, no rows give an empty value, and more than one row is an error.
@@ -169,14 +184,16 @@ Indexes are sorted, like MySQL's default B-tree indexes. Every table gets an aut
 untitled/
 ├── src/db/
 │   ├── Main.java      entry point
-│   ├── model/         Table, Row, Column, DataType, Index (sorted index on one or more columns)
+│   ├── model/         Table, Row, Column, DataType, Index (sorted index on one or more columns),
+│   │                  Change (one statement's effect), Journal (where changes are written first)
 │   ├── query/         QueryEngine (planning, joins, grouping); WHERE/ON as an Expression tree
 │   │                  (Condition, And, Or, Not, ...); value expressions (ColumnRef, Aggregate,
 │   │                  Arithmetic, FunctionCall, CaseWhen, Subquery); Scope (name resolution);
 │   │                  IndexLookup (index choice)
 │   ├── statement/     one class per command, plus ResultTable (prints results as a table)
 │   ├── parser/        Lexer (text → tokens) and Parser (tokens → Statement)
-│   ├── storage/       TableSerializer / TableDeserializer (JSON files)
+│   ├── storage/       Database (data folder, recovery, checkpoints), WriteAheadLog,
+│   │                  TableSerializer / TableDeserializer (JSON)
 │   └── repl/          REPL: the interactive prompt
 └── test/db/           JUnit 5 tests, same packages as src
 ```

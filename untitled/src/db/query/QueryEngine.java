@@ -1,6 +1,7 @@
 package db.query;
 
 import db.model.Index;
+import db.model.Journal;
 import db.model.Row;
 import db.model.Table;
 
@@ -9,13 +10,31 @@ import java.util.stream.Collectors;
 
 public class QueryEngine {
     private HashMap<String, Table> tablesMap = new LinkedHashMap<>();
+    // Where every change is written before it happens; nowhere for an in-memory database
+    private Journal journal = Journal.NONE;
+
+    // Also hands the journal to every table, so their writes are logged too
+    public void setJournal(Journal journal) {
+        this.journal = journal;
+        for (Table table : tablesMap.values()) table.setJournal(journal);
+    }
 
     public void addTable(Table table) {
+        journal.created(table);
         tablesMap.put(table.getName(), table);
+        table.setJournal(journal);
+    }
+
+    public void checkpoint() {
+        journal.checkpoint();
     }
 
     public Table getTable(String tableName) {
         return tablesMap.get(tableName);
+    }
+
+    public Collection<Table> getTables() {
+        return Collections.unmodifiableCollection(tablesMap.values());
     }
 
     public Table requireTable(String tableName) {
@@ -26,12 +45,14 @@ public class QueryEngine {
 
     public void dropTable(String tableName) {
         requireTable(tableName);
-        tablesMap.remove(tableName);
+        journal.dropped(tableName);
+        tablesMap.remove(tableName).setJournal(Journal.NONE);
     }
 
     public void renameTable(String from, String to) {
         Table table = requireTable(from);
         if (tablesMap.containsKey(to)) throw new IllegalArgumentException("Table '" + to + "' already exists");
+        journal.renamed(from, to);
         tablesMap.remove(from);
         table.rename(to);
         tablesMap.put(to, table);

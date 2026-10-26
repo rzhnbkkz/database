@@ -28,6 +28,7 @@ import db.query.SelectQuery;
 import db.query.Subquery;
 import db.query.TableRef;
 import db.statement.AlterTableStatement;
+import db.statement.CheckpointStatement;
 import db.statement.CreateIndexStatement;
 import db.statement.CreateStatement;
 import db.statement.DeleteStatement;
@@ -130,6 +131,10 @@ public class Parser {
             }
             case "SAVE" -> parseSave();
             case "LOAD" -> parseLoad();
+            case "CHECKPOINT" -> {
+                index++;
+                yield new CheckpointStatement();
+            }
             default -> throw new IllegalArgumentException("Command " + first.text() + " is unrecognized");
         };
         acceptSymbol(";");

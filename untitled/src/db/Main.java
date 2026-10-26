@@ -1,10 +1,24 @@
 package db;
 
-import db.query.QueryEngine;
 import db.repl.REPL;
+import db.storage.Database;
+import db.storage.StorageException;
+
+import java.io.IOException;
+import java.nio.file.Path;
 
 public class Main {
+    // java -jar database.jar [data folder], default ./data
     public static void main(String[] args) {
+        Path dir = Path.of(args.length > 0 ? args[0] : "data");
+        Database database;
+        try {
+            database = Database.open(dir);
+        } catch (IOException | StorageException e) {
+            System.err.println("Could not open data folder " + dir + ": " + e.getMessage());
+            System.exit(1);
+            return;
+        }
         System.out.println("""
                 Commands:
                   CREATE TABLE [IF NOT EXISTS] <table> (<column> <type> [<option> ...], ...)
@@ -24,8 +38,9 @@ public class Main {
                   DROP INDEX <name> ON <table>
                   SHOW INDEX FROM <table>
                   EXPLAIN SELECT ...                shows which indexes a query uses
-                  SAVE <table> '<path>'
-                  LOAD '<path>'
+                  SAVE <table> '<path>'              export a table to a JSON file
+                  LOAD '<path>'                      import a table from one
+                  CHECKPOINT                         save every table to the data folder's snapshot and empty its log
                   EXIT
                 Expressions: columns, values, + - * / %, parentheses, CASE WHEN <condition> THEN ... [ELSE ...] END,
                   UPPER LOWER LENGTH TRIM CONCAT SUBSTRING REPLACE ABS ROUND FLOOR CEIL COALESCE IFNULL NULLIF
@@ -38,6 +53,20 @@ public class Main {
                   COUNT(*), COUNT([DISTINCT] <expression>), SUM, AVG, MIN, MAX in the column list, HAVING and ORDER BY
                 Values: 42, -1.5, TRUE, FALSE, NULL, 'text' (text always in quotes);
                   in INSERT and UPDATE ... SET also DEFAULT, the column's default""");
-        new REPL().start(new QueryEngine());
+        int tables = database.engine().getTables().size();
+        System.out.println("Data folder " + dir.toAbsolutePath().normalize() + ": " + tables + (tables == 1 ? " table" : " tables")
+                + (database.recoveredChanges() > 0 ? ", " + database.recoveredChanges() + " changes recovered from the log" : ""));
+        new REPL().start(database.engine());
+        // Every change is already in the log; the checkpoint just makes the next start faster
+        try {
+            database.checkpoint();
+        } catch (StorageException e) {
+            System.err.println(e.getMessage());
+        }
+        try {
+            database.close();
+        } catch (IOException e) {
+            System.err.println("Could not close data folder " + dir + ": " + e.getMessage());
+        }
     }
 }

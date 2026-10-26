@@ -13,6 +13,18 @@ import java.io.IOException;
 public class TableSerializer {
 
     public static String toJSON(Table table) {
+        return toJSON(table, false);
+    }
+
+    // On one line, for a log record. Every newline in toJSON, and the indent after it, is formatting:
+    // quote escapes the newlines in text.
+    static String toCompactJSON(Table table) {
+        return toJSON(table, true).replaceAll("\n *", "");
+    }
+
+    // withRowIds also writes each row's internal id ("rowIds", in row order), which a data folder's snapshot
+    // needs because its log records name rows by id. Files for SAVE don't, and get new ids when loaded.
+    static String toJSON(Table table, boolean withRowIds) {
         StringBuilder sb = new StringBuilder();
         sb.append("{\n");
         sb.append("  \"name\": ").append(quote(table.getName())).append(",\n");
@@ -20,15 +32,8 @@ public class TableSerializer {
         sb.append("  \"columns\": [");
         List<Column> columns = table.getColumns();
         for (int i = 0; i < columns.size(); i++) {
-            Column col = columns.get(i);
             sb.append(i == 0 ? "\n" : ",\n");
-            sb.append("    {\"name\": ").append(quote(col.getName()))
-              .append(", \"type\": ").append(quote(col.getDataType().name()));
-            if (col.isPrimaryKey()) sb.append(", \"primaryKey\": true");
-            if (col.isNotNull()) sb.append(", \"notNull\": true");
-            if (col.getDefaultValue() != null) sb.append(", \"default\": ").append(valueToJSON(col.getDefaultValue()));
-            if (col.isAutoIncrement()) sb.append(", \"autoIncrement\": true");
-            sb.append("}");
+            sb.append("    ").append(columnToJSON(columns.get(i)));
         }
         sb.append(columns.isEmpty() ? "],\n" : "\n  ],\n");
 
@@ -52,8 +57,12 @@ public class TableSerializer {
             sb.append("\n  ],\n");
         }
 
-        sb.append("  \"rows\": [");
         List<Row> rows = table.getRows();
+        if (withRowIds) {
+            sb.append("  \"rowIds\": [")
+              .append(table.getRowsById().keySet().stream().map(String::valueOf).collect(Collectors.joining(", "))).append("],\n");
+        }
+        sb.append("  \"rows\": [");
         for (int i = 0; i < rows.size(); i++) {
             sb.append(i == 0 ? "\n" : ",\n");
             sb.append("    {");
@@ -71,7 +80,25 @@ public class TableSerializer {
         return sb.toString();
     }
 
-    private static String valueToJSON(Object value) {
+    static String columnToJSON(Column col) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("{\"name\": ").append(quote(col.getName()))
+          .append(", \"type\": ").append(quote(col.getDataType().name()));
+        if (col.isPrimaryKey()) sb.append(", \"primaryKey\": true");
+        if (col.isNotNull()) sb.append(", \"notNull\": true");
+        if (col.getDefaultValue() != null) sb.append(", \"default\": ").append(valueToJSON(col.getDefaultValue()));
+        if (col.isAutoIncrement()) sb.append(", \"autoIncrement\": true");
+        return sb.append("}").toString();
+    }
+
+    // A row's cells as {"column": value}; empty cells are left out
+    static String rowToJSON(Row row) {
+        return row.getData().entrySet().stream()
+                .map(entry -> quote(entry.getKey()) + ": " + valueToJSON(entry.getValue()))
+                .collect(Collectors.joining(", ", "{", "}"));
+    }
+
+    static String valueToJSON(Object value) {
         if (value == null) return "null";
         if (value instanceof String s) return quote(s);
         if (value instanceof Float f) {
@@ -83,7 +110,7 @@ public class TableSerializer {
         return value.toString();
     }
 
-    private static String quote(String s) {
+    static String quote(String s) {
         StringBuilder sb = new StringBuilder("\"");
         for (char c : s.toCharArray()) {
             switch (c) {
