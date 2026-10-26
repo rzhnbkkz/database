@@ -42,6 +42,8 @@ public class Database implements Journal, Closeable {
     // The LSN of the last change written, in the log or the snapshot
     private long lastLsn = 0;
     private int recovered = 0;
+    // The open transaction's changes, written as one record at COMMIT; null outside a transaction
+    private List<String> transaction = null;
     private final long checkpointSize;
     // The log size that triggers the next automatic checkpoint; moved on when one fails, so it's not retried every write
     private long nextCheckpointAt;
@@ -124,6 +126,12 @@ public class Database implements Journal, Closeable {
 
     private void replay(Map<String, Object> fields) {
         String op = TableDeserializer.asString(TableDeserializer.require(fields, "op"), "op");
+        if (op.equals("transaction")) {
+            for (Object change : TableDeserializer.asArray(TableDeserializer.require(fields, "changes"), "changes")) {
+                replay(TableDeserializer.asObject(change, "change"));
+            }
+            return;
+        }
         String name = TableDeserializer.asString(TableDeserializer.require(fields, "table"), "table");
         switch (op) {
             case "create_table" -> engine.addTable(TableDeserializer.fromJSON(TableDeserializer.require(fields, "data")));
@@ -206,30 +214,66 @@ public class Database implements Journal, Closeable {
         } else {
             throw new IllegalStateException("Unknown change " + change);
         }
-        write(op, table.getName(), sb.toString());
+        String body = fields(op, table.getName(), sb.toString());
+        // Inside a transaction, held until COMMIT. The tables change now, but only this session sees them,
+        // and a checkpoint can't run until the transaction ends.
+        if (transaction != null) transaction.add(body);
+        else write(body);
     }
 
     @Override
     public void created(Table table) {
-        write("create_table", table.getName(), "\"data\": " + TableSerializer.toCompactJSON(table));
+        write(fields("create_table", table.getName(), "\"data\": " + TableSerializer.toCompactJSON(table)));
     }
 
     @Override
     public void dropped(String table) {
-        write("drop_table", table, null);
+        write(fields("drop_table", table, null));
     }
 
     @Override
     public void renamed(String from, String to) {
-        write("rename_table", from, "\"to\": " + TableSerializer.quote(to));
+        write(fields("rename_table", from, "\"to\": " + TableSerializer.quote(to)));
     }
 
-    private void write(String op, String table, String rest) {
+    @Override
+    public void begin() {
+        transaction = new ArrayList<>();
+    }
+
+    // One record for the whole transaction, so after a crash it's all there or not at all
+    @Override
+    public void commit() {
+        List<String> changes = transaction;
+        transaction = null;
+        if (changes.isEmpty()) return;
+        append(fields("transaction", null, "\"changes\": " + changes.stream().map(body -> "{" + body + "}")
+                .collect(Collectors.joining(", ", "[", "]"))));
+        // Only after the record is written: before it, the tables held changes the log didn't
+        checkpointIfLarge();
+    }
+
+    @Override
+    public void rollback() {
+        transaction = null;
+    }
+
+    // A record's fields after its LSN
+    private static String fields(String op, String table, String rest) {
+        return "\"op\": " + TableSerializer.quote(op) + (table == null ? "" : ", \"table\": " + TableSerializer.quote(table))
+                + (rest == null ? "" : ", " + rest);
+    }
+
+    // A change made outside a transaction
+    private void write(String body) {
         // Safe here: every earlier change is applied, and this one hasn't changed anything yet
         checkpointIfLarge();
+        append(body);
+    }
+
+    private void append(String body) {
         long lsn = lastLsn + 1;
-        log.append("{\"lsn\": " + lsn + ", \"op\": " + TableSerializer.quote(op) + ", \"table\": " + TableSerializer.quote(table)
-                + (rest == null ? "" : ", " + rest) + "}");
+        log.append("{\"lsn\": " + lsn + ", " + body + "}");
         lastLsn = lsn;
     }
 
@@ -243,6 +287,8 @@ public class Database implements Journal, Closeable {
     // and renamed over the old one, so a crash leaves either the old snapshot or the new one, never half of one.
     @Override
     public void checkpoint() {
+        // The tables hold uncommitted changes then; QueryEngine commits before a checkpoint
+        if (transaction != null) throw new IllegalStateException("Can't checkpoint inside a transaction");
         Path snapshot = dir.resolve(SNAPSHOT);
         Path temporary = dir.resolve(SNAPSHOT + ".tmp");
         List<String> tables = new ArrayList<>();

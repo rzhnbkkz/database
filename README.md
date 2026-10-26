@@ -24,6 +24,7 @@ Input a command or type EXIT to exit: SELECT id, name, city FROM users;
 - **Expressions**: arithmetic, `CASE`, and 14 functions (`UPPER`, `CONCAT`, `ROUND`, `COALESCE`, ...)
 - **Indexes**: single and multi-column, `UNIQUE`, used for `=`, ranges, joins and `ORDER BY`, with `EXPLAIN` to see the plan
 - **Schema**: primary keys, `AUTO_INCREMENT`, `NOT NULL`, `DEFAULT`, and type checks before any row is read
+- **Transactions**: `BEGIN`, `COMMIT` and `ROLLBACK`, all-or-nothing even across a crash
 - **Durability**: a write-ahead log in a data folder, so every acknowledged write survives a crash, with checkpoints and recovery on startup
 - **Import and export**: `SAVE` and `LOAD` single tables as JSON
 - **Errors that point at the problem**: `Expected FROM, got 'users' at position 10`
@@ -86,6 +87,7 @@ More statements are listed below.
 | `DELETE FROM t [WHERE ...]` | |
 | `CREATE [UNIQUE] INDEX name ON t (col, ...)`, `DROP INDEX name ON t`, `SHOW INDEX FROM t` | |
 | `EXPLAIN SELECT ...` | shows, per table, whether an index or a full scan is used |
+| `BEGIN` (or `START TRANSACTION`), `COMMIT`, `ROLLBACK` | group statements into one all-or-nothing change |
 | `CHECKPOINT` | writes a snapshot of every table and empties the log; also runs on `EXIT` |
 | `SAVE t 'file.json'`, `LOAD 'file.json'` | export and import one table; this engine's own commands, not standard SQL |
 
@@ -148,11 +150,21 @@ The database lives in a data folder (`./data` unless you name another one) holdi
 - **Row changes, not SQL**: a record holds the statement's effect: the inserted rows, the new version of each updated row, the ids of deleted rows, or the schema change. Recovery re-applies these through the same code as the original write, without re-running any query.
 - **Recovery**: opening the folder loads the snapshot, then replays the log records after its LSN. Each record carries a CRC32 checksum. An incomplete last record, left by a crash during a write, was never acknowledged, so it's dropped. A damaged record with good ones after it means corruption, and the folder isn't opened rather than losing those records.
 - **Checkpoints**: `CHECKPOINT` writes a new snapshot to a temporary file, renames it into place, and empties the log. A crash before the rename leaves the old snapshot. A crash after it leaves log records the snapshot already holds, which the LSN check skips, so no change is applied twice.
-- **When checkpoints run**: on `CHECKPOINT`, on `EXIT`, and by themselves once the log reaches 16 MB, which keeps the log and the time to replay it bounded. The automatic one runs just before the next write is logged, when every earlier statement is fully applied, so a snapshot never holds part of a statement. It also runs when opening a folder whose log is already that long. If it fails, the write still goes ahead (the log has every change), a warning is printed, and it's tried again once the log has grown another 16 MB.
+- **When checkpoints run**: on `CHECKPOINT`, on `EXIT`, and by themselves once the log reaches 16 MB, which keeps the log and the time to replay it bounded. The automatic one runs just before the next write is logged, when every earlier statement is fully applied, so a snapshot never holds part of a statement. Inside a transaction it waits until just after the `COMMIT` record is on disk, so a snapshot never holds uncommitted changes. It also runs when opening a folder whose log is already that long. If it fails, the write still goes ahead (the log has every change), a warning is printed, and it's tried again once the log has grown another 16 MB.
 - **Row ids**: rows have internal ids that indexes and log records use. The snapshot keeps them, unlike `SAVE` files, which get new ids when loaded.
 - **One process at a time**: a lock file stops a second process from opening the same folder.
 - **Cost**: the fsync dominates, at about 4 ms per write statement on a laptop SSD. A multi-row INSERT pays it once for all its rows. Reopening 2,000 rows from a snapshot takes about 40 ms.
-- **Not yet**: there are no multi-statement transactions (`BEGIN` / `COMMIT`); each statement is its own.
+
+## Transactions
+Outside a transaction every statement is its own (autocommit). `BEGIN` groups the statements that follow until `COMMIT` or `ROLLBACK`, following MySQL:
+- Statements inside a transaction see its changes right away. Nothing is written to the log until `COMMIT`, which writes the whole transaction as one record and forces it to disk. After a crash, a transaction is either all there or not there at all. A commit record cut off by a crash counts as no commit.
+- `ROLLBACK` puts every table the transaction changed back as it was at `BEGIN`: rows, indexes and AUTO_INCREMENT counters. Unlike MySQL, the counter goes back too, so numbers handed out inside the rolled-back transaction are given out again.
+- A statement that fails inside a transaction changes nothing, and the transaction stays open.
+- A schema change (`CREATE TABLE`, `ALTER TABLE`, `DROP TABLE`, `CREATE INDEX`, `DROP INDEX`, `LOAD`) and `CHECKPOINT` commit an open transaction first, and so does `BEGIN` inside one. So transactions only hold row changes. Unlike MySQL, a schema change that fails its checks (say, a column that already exists) leaves the transaction open.
+- `COMMIT` or `ROLLBACK` with no transaction open does nothing. Leaving the REPL with a transaction open rolls it back.
+- If writing the commit fails, the transaction is rolled back, so the tables never hold changes the log doesn't.
+- There's one session, so there's nothing to isolate from: no locks, and no other connection that could see uncommitted rows.
+- The first change a transaction makes to a table copies that table's list of rows (not the rows themselves), and a rollback rebuilds its indexes. Both take time in proportion to the table's size.
 
 ## Subqueries
 - A name the subquery's own tables don't have is looked up in the outer query, so `o.user_id = u.id` uses the outer row's `u.id`. This also works from subqueries nested deeper.

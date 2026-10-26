@@ -40,6 +40,7 @@ public class Main {
                   EXPLAIN SELECT ...                shows which indexes a query uses
                   SAVE <table> '<path>'              export a table to a JSON file
                   LOAD '<path>'                      import a table from one
+                  BEGIN | START TRANSACTION, COMMIT, ROLLBACK    group statements into one all-or-nothing change
                   CHECKPOINT                         save every table to the data folder's snapshot and empty its log
                   EXIT
                 Expressions: columns, values, + - * / %, parentheses, CASE WHEN <condition> THEN ... [ELSE ...] END,
@@ -57,6 +58,11 @@ public class Main {
         System.out.println("Data folder " + dir.toAbsolutePath().normalize() + ": " + tables + (tables == 1 ? " table" : " tables")
                 + (database.recoveredChanges() > 0 ? ", " + database.recoveredChanges() + " changes recovered from the log" : ""));
         new REPL().start(database.engine());
+        // As in MySQL, leaving with a transaction open rolls it back
+        if (database.engine().inTransaction()) {
+            database.engine().rollback();
+            System.out.println("Open transaction rolled back");
+        }
         // Every change is already in the log; the checkpoint just makes the next start faster
         try {
             database.checkpoint();

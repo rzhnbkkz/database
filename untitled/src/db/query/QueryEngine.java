@@ -1,5 +1,6 @@
 package db.query;
 
+import db.model.Change;
 import db.model.Index;
 import db.model.Journal;
 import db.model.Row;
@@ -12,20 +13,81 @@ public class QueryEngine {
     private HashMap<String, Table> tablesMap = new LinkedHashMap<>();
     // Where every change is written before it happens; nowhere for an in-memory database
     private Journal journal = Journal.NONE;
+    // The open transaction: each table it changed, as it was before. null outside a transaction.
+    private Map<Table, Table.Savepoint> transaction = null;
 
-    // Also hands the journal to every table, so their writes are logged too
+    // What tables write their changes to. Inside a transaction, a row change first saves the table's rows
+    // (the first time the transaction changes it) so ROLLBACK can put them back. A schema change commits the
+    // transaction first, as in MySQL, so transactions only ever hold row changes. The change has passed its
+    // checks but isn't applied yet, so the commit holds exactly the transaction's changes.
+    private final Journal tableJournal = new Journal() {
+        @Override
+        public void changed(Table table, Change change) {
+            if (transaction != null) {
+                boolean rowChange = change instanceof Change.Insert || change instanceof Change.Update || change instanceof Change.Delete;
+                // QueryEngine's commit, not this Journal's own
+                if (!rowChange) QueryEngine.this.commit();
+                else if (!transaction.containsKey(table)) transaction.put(table, table.savepoint());
+            }
+            journal.changed(table, change);
+        }
+    };
+
     public void setJournal(Journal journal) {
         this.journal = journal;
-        for (Table table : tablesMap.values()) table.setJournal(journal);
+        for (Table table : tablesMap.values()) table.setJournal(tableJournal);
     }
 
     public void addTable(Table table) {
+        endTransaction();
         journal.created(table);
         tablesMap.put(table.getName(), table);
-        table.setJournal(journal);
+        table.setJournal(tableJournal);
+    }
+
+    // BEGIN. As in MySQL, BEGIN inside a transaction commits it first.
+    public void begin() {
+        if (inTransaction()) commit();
+        journal.begin();
+        transaction = new HashMap<>();
+    }
+
+    public boolean inTransaction() {
+        return transaction != null;
+    }
+
+    // COMMIT: the transaction's changes are written to the log as one record. If that fails they're rolled
+    // back, so the tables never hold changes the log doesn't.
+    public void commit() {
+        if (!inTransaction()) throw new IllegalStateException("No transaction is open");
+        try {
+            journal.commit();
+        } catch (RuntimeException e) {
+            undo();
+            throw e;
+        }
+        transaction = null;
+    }
+
+    // ROLLBACK: every table the transaction changed goes back to how it was at BEGIN
+    public void rollback() {
+        if (!inTransaction()) throw new IllegalStateException("No transaction is open");
+        undo();
+        journal.rollback();
+    }
+
+    // Schema changes and checkpoints commit an open transaction first, as in MySQL
+    private void endTransaction() {
+        if (inTransaction()) commit();
+    }
+
+    private void undo() {
+        for (Map.Entry<Table, Table.Savepoint> entry : transaction.entrySet()) entry.getKey().rollbackTo(entry.getValue());
+        transaction = null;
     }
 
     public void checkpoint() {
+        endTransaction();
         journal.checkpoint();
     }
 
@@ -45,6 +107,7 @@ public class QueryEngine {
 
     public void dropTable(String tableName) {
         requireTable(tableName);
+        endTransaction();
         journal.dropped(tableName);
         tablesMap.remove(tableName).setJournal(Journal.NONE);
     }
@@ -52,6 +115,7 @@ public class QueryEngine {
     public void renameTable(String from, String to) {
         Table table = requireTable(from);
         if (tablesMap.containsKey(to)) throw new IllegalArgumentException("Table '" + to + "' already exists");
+        endTransaction();
         journal.renamed(from, to);
         tablesMap.remove(from);
         table.rename(to);

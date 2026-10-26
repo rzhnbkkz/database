@@ -332,6 +332,28 @@ public class Table {
         write(new Change.DropIndex(indexName));
     }
 
+    // A table's rows as they were when a transaction first changed it. Transactions hold only row changes
+    // (schema changes end them), so the rows and counters are all a rollback needs.
+    public record Savepoint(Map<Long, Row> rows, long nextId, long nextAutoIncrement) {}
+
+    public Savepoint savepoint() {
+        return new Savepoint(new LinkedHashMap<>(rows), nextId, nextAutoIncrement);
+    }
+
+    // ROLLBACK: back to the savepoint, with every index rebuilt from the restored rows
+    public void rollbackTo(Savepoint savepoint) {
+        rows.clear();
+        rows.putAll(savepoint.rows());
+        nextId = savepoint.nextId();
+        nextAutoIncrement = savepoint.nextAutoIncrement();
+        indexes.replaceAll((indexName, index) -> {
+            List<DataType> types = index.getColumns().stream().map(c -> column(c).getDataType()).toList();
+            Index rebuilt = new Index(indexName, index.getColumns(), types, index.isUnique());
+            for (Map.Entry<Long, Row> entry : rows.entrySet()) rebuilt.add(entry.getKey(), entry.getValue());
+            return rebuilt;
+        });
+    }
+
     public void setJournal(Journal journal) {
         this.journal = journal;
     }

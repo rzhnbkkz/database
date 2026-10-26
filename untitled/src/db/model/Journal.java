@@ -15,6 +15,13 @@ public interface Journal {
 
     default void renamed(String from, String to) {}
 
+    // A transaction: the changes until commit are written together, as one record, or not at all
+    default void begin() {}
+
+    default void commit() {}
+
+    default void rollback() {}
+
     // Saves everything so the log can start over
     default void checkpoint() {
         throw new IllegalArgumentException("CHECKPOINT needs a data folder, this database is only in memory");
